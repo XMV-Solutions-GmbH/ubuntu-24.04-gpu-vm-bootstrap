@@ -15,7 +15,7 @@ export NC='\033[0m'
 export TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export PROJECT_ROOT="$(cd "$TEST_DIR/.." && pwd)"
 export BOOTSTRAP_SCRIPT="$PROJECT_ROOT/gpu-vm-bootstrap.sh"
-export VMCTL_SCRIPT="$PROJECT_ROOT/vmctl.sh"
+export VMCTL_SCRIPT="$PROJECT_ROOT/vmctl"
 export FIXTURES_DIR="$TEST_DIR/fixtures"
 
 # Temporary directory for test artefacts

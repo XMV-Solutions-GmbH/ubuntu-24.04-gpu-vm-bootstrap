@@ -20,6 +20,8 @@ set -euo pipefail
 readonly SCRIPT_NAME="gpu-vm-bootstrap"
 readonly SCRIPT_VERSION="0.1.0-dev"
 readonly SCRIPT_DOWNLOAD_URL="https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/gpu-vm-bootstrap.sh"
+readonly VMCTL_DOWNLOAD_URL="https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/vmctl"
+VMCTL_INSTALL_PATH="${VMCTL_INSTALL_PATH:-/usr/local/bin/vmctl}"
 LOG_FILE="${LOG_FILE:-/var/log/${SCRIPT_NAME}.log}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/vmctl}"
 
@@ -1768,11 +1770,135 @@ phase_bridge_setup() {
 }
 
 # =============================================================================
-# Phase Stubs (to be implemented in subsequent phases)
+# Phase 5: vmctl CLI Installation
 # =============================================================================
 
+# Locate the vmctl source file.
+# When the bootstrap script is run from a cloned repository, vmctl lives
+# alongside it.  During piped execution (curl | bash) the file must be
+# downloaded.
+_locate_vmctl_source() {
+    # Try relative to the running script first
+    local script_dir
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+    if [[ -f "${script_dir}/vmctl" ]]; then
+        echo "${script_dir}/vmctl"
+        return 0
+    fi
+
+    # Fallback: download to a temporary location
+    local tmp_path="/tmp/vmctl.$$"
+    log_info "Downloading vmctl from repository..."
+    curl -fsSL "${VMCTL_DOWNLOAD_URL}" -o "${tmp_path}"
+    chmod +x "${tmp_path}"
+    echo "${tmp_path}"
+    return 0
+}
+
+# Compare installed vmctl version against the source version
+_vmctl_version_matches() {
+    local source_path="$1"
+
+    if [[ ! -x "${VMCTL_INSTALL_PATH}" ]]; then
+        return 1
+    fi
+
+    local installed_ver source_ver
+    installed_ver="$("${VMCTL_INSTALL_PATH}" version 2>/dev/null \
+        | awk '{print $NF}' | sed 's/^v//')" || return 1
+    source_ver="$(grep -m1 '^readonly VMCTL_VERSION=' "${source_path}" \
+        | cut -d'"' -f2)" || return 1
+
+    [[ "${installed_ver}" == "${source_ver}" ]]
+}
+
+# Remove temporary vmctl download if applicable
+_cleanup_vmctl_tmp() {
+    local path="$1"
+    if [[ "${path}" == /tmp/vmctl.* ]]; then
+        rm -f "${path}"
+    fi
+}
+
+# Install vmctl to /usr/local/bin and create the config directory
+install_vmctl() {
+    log_step "vmctl" "Installing vmctl CLI..."
+
+    local source_path
+    source_path="$(_locate_vmctl_source)"
+
+    # Idempotent: skip when already installed at the same version
+    if _vmctl_version_matches "${source_path}"; then
+        log_debug "vmctl already installed at correct version"
+        _cleanup_vmctl_tmp "${source_path}"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install vmctl to ${VMCTL_INSTALL_PATH}"
+        log_dry_run "Would create config directory ${CONFIG_DIR}"
+        _cleanup_vmctl_tmp "${source_path}"
+        return 0
+    fi
+
+    # Install the binary
+    install -m 0755 "${source_path}" "${VMCTL_INSTALL_PATH}"
+    log_success "Installed vmctl to ${VMCTL_INSTALL_PATH}"
+
+    # Clean up temp file if we downloaded one
+    _cleanup_vmctl_tmp "${source_path}"
+}
+
+# Create the vmctl configuration directory
+create_vmctl_config_dir() {
+    log_step "vmctl" "Ensuring configuration directory exists..."
+
+    if [[ -d "${CONFIG_DIR}" ]]; then
+        log_debug "Config directory already exists: ${CONFIG_DIR}"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would create directory: ${CONFIG_DIR}"
+        return 0
+    fi
+
+    mkdir -p "${CONFIG_DIR}"
+    chmod 0755 "${CONFIG_DIR}"
+    log_success "Created config directory: ${CONFIG_DIR}"
+}
+
+# Verify the installed vmctl works correctly
+verify_vmctl() {
+    log_step "vmctl" "Verifying vmctl installation..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would verify vmctl version output"
+        return 0
+    fi
+
+    if ! is_command_available vmctl; then
+        log_error "vmctl not found in PATH after installation"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    local version_output
+    version_output="$(vmctl version 2>&1)" || {
+        log_error "vmctl version command failed"
+        return "${EXIT_GENERAL_ERROR}"
+    }
+
+    log_success "vmctl operational: ${version_output}"
+    return 0
+}
+
+# Phase 5 orchestrator: vmctl installation
 phase_vmctl_install() {
-    log_info "vmctl installation — not yet implemented"
+    install_vmctl || return $?
+    create_vmctl_config_dir || return $?
+    verify_vmctl || return $?
+
     return 0
 }
 
