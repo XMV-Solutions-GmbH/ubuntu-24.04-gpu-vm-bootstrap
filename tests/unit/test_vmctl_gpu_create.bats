@@ -825,3 +825,133 @@ MOCK
     assert_output_contains "vmctl create talos"
     assert_output_contains "vmctl create ubuntu"
 }
+
+# =============================================================================
+# Ubuntu ISO Download Helpers
+# =============================================================================
+
+@test "_fetch_ubuntu_iso_name_parsesIndexPage" {
+    # Mock curl to return a fake directory listing
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/curl" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"-fsSL"* ]]; then
+    cat << 'HTML'
+<a href="ubuntu-25.10-desktop-amd64.iso">ubuntu-25.10-desktop-amd64.iso</a>
+HTML
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/curl"
+    export PATH="$mock_dir:$PATH"
+
+    run _fetch_ubuntu_iso_name "25.10"
+    assert_status 0
+    assert_output_contains "ubuntu-25.10-desktop-amd64.iso"
+}
+
+@test "_fetch_ubuntu_iso_name_noISOFound_returnsError" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/curl" << 'MOCK'
+#!/bin/bash
+echo "<html>empty page</html>"
+exit 0
+MOCK
+    chmod +x "$mock_dir/curl"
+    export PATH="$mock_dir:$PATH"
+
+    run _fetch_ubuntu_iso_name "99.99"
+    assert_status 1
+}
+
+@test "_download_ubuntu_iso_usesCachedISO" {
+    # Place a fake cached ISO
+    touch "$VMCTL_IMAGE_DIR/ubuntu-25.10-desktop-amd64.iso"
+
+    run _download_ubuntu_iso
+    assert_status 0
+    assert_output_contains "Using cached"
+    assert_output_contains "ubuntu-25.10-desktop-amd64.iso"
+}
+
+@test "_download_ubuntu_iso_noCachedISO_triggersDownload" {
+    # Mock curl for both index page and download
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/curl" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"-fsSL"* ]]; then
+    cat << 'HTML'
+<a href="ubuntu-25.10-desktop-amd64.iso">ubuntu-25.10-desktop-amd64.iso</a>
+HTML
+    exit 0
+fi
+if [[ "$*" == *"-fSL"* ]] && [[ "$*" == *"--progress-bar"* ]]; then
+    # Fake download — extract -o argument to create file
+    local outfile=""
+    local prev=""
+    for arg in $@; do
+        if [[ "$prev" == "-o" ]]; then
+            outfile="$arg"
+            break
+        fi
+        prev="$arg"
+    done
+    if [[ -n "$outfile" ]]; then
+        echo "fake-iso-content" > "$outfile"
+    fi
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/curl"
+    export PATH="$mock_dir:$PATH"
+
+    run _download_ubuntu_iso
+    assert_status 0
+    assert_output_contains "Downloading Ubuntu"
+    assert_output_contains "Ubuntu ISO ready"
+}
+
+@test "_host_prefix_len_returns32ForDirectRoute" {
+    # Mock ip command to return /32
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"addr show"* ]]; then
+    echo "    inet 88.198.21.134/32 scope global enp4s0"
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
+    run _host_prefix_len
+    assert_status 0
+    [[ "$output" == "32" ]]
+}
+
+@test "_host_prefix_len_returns28ForSubnet" {
+    # Mock ip command to return /28
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"addr show"* ]]; then
+    echo "    inet 88.198.27.122/28 scope global enp4s0"
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
+    run _host_prefix_len
+    assert_status 0
+    [[ "$output" == "28" ]]
+}

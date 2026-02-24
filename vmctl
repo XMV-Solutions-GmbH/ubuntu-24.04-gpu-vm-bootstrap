@@ -20,6 +20,8 @@ readonly VMCTL_IMAGE_DIR="${VMCTL_IMAGE_DIR:-${VMCTL_CONFIG_DIR}/images}"
 readonly VMCTL_MANAGED_TAG="managed-by-vmctl"
 readonly TALOS_IMAGE_FACTORY_URL="https://factory.talos.dev"
 readonly TALOS_GITHUB_API="https://api.github.com/repos/siderolabs/talos/releases/latest"
+readonly UBUNTU_ISO_BASE_URL="https://releases.ubuntu.com"
+readonly UBUNTU_DEFAULT_RELEASE="25.10"
 
 # Exit codes
 readonly EXIT_SUCCESS=0
@@ -1094,6 +1096,67 @@ _download_talos_image() {
     echo "${image_file}"
 }
 
+# Fetch the latest Ubuntu point-release ISO filename from releases.ubuntu.com
+_fetch_ubuntu_iso_name() {
+    local release="${1:-${UBUNTU_DEFAULT_RELEASE}}"
+    local index_url="${UBUNTU_ISO_BASE_URL}/${release}/"
+
+    _require_command curl || return $?
+
+    local latest=""
+    latest="$(curl -fsSL "${index_url}" 2>/dev/null \
+        | grep -oP "ubuntu-${release}[^\"]*-desktop-amd64\.iso" \
+        | sort -V | tail -n1)" || true
+
+    if [[ -z "${latest}" ]]; then
+        log_error "Could not detect latest Ubuntu ${release} ISO from ${index_url}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+    echo "${latest}"
+}
+
+# Download an Ubuntu Desktop ISO (cached)
+# shellcheck disable=SC2120
+_download_ubuntu_iso() {
+    local release="${1:-${UBUNTU_DEFAULT_RELEASE}}"
+
+    # Check cache first — any ubuntu-*.iso present?
+    local cached=""
+    cached="$(find "${VMCTL_IMAGE_DIR}" -maxdepth 1 -name 'ubuntu-*.iso' -print -quit 2>/dev/null)" || true
+    if [[ -n "${cached}" ]]; then
+        log_info "Using cached Ubuntu ISO: ${cached}"
+        echo "${cached}"
+        return 0
+    fi
+
+    local iso_name=""
+    iso_name="$(_fetch_ubuntu_iso_name "${release}")" || return $?
+    local url="${UBUNTU_ISO_BASE_URL}/${release}/${iso_name}"
+    local dest="${VMCTL_IMAGE_DIR}/${iso_name}"
+
+    mkdir -p "${VMCTL_IMAGE_DIR}"
+    log_info "Downloading Ubuntu Desktop ISO..."
+    log_info "URL: ${url}"
+    log_info "This is a ~6 GB download — grab a coffee."
+
+    if ! curl -fSL --progress-bar -o "${dest}" "${url}" 2>&1; then
+        log_error "Failed to download Ubuntu ISO"
+        rm -f "${dest}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Ubuntu ISO ready: ${dest}"
+    echo "${dest}"
+}
+
+# Detect the host interface prefix length (e.g. 32, 28, 24)
+_host_prefix_len() {
+    local prefix=""
+    prefix="$(ip -4 addr show scope global 2>/dev/null \
+        | awk '/inet / {split($2, a, "/"); print a[2]; exit}')" || true
+    echo "${prefix:-32}"
+}
+
 # =============================================================================
 # Subcommand: create
 # =============================================================================
@@ -1304,19 +1367,10 @@ cmd_create_ubuntu() {
     log_info "  GPU:     ${VM_GPU}"
     log_info "  MAC:     ${VM_MAC}"
 
-    # Check for Ubuntu ISO
-    local iso_dir="${VMCTL_IMAGE_DIR}"
+    # Download / locate Ubuntu ISO (auto-download like Talos)
     local iso_file=""
-    iso_file="$(find "${iso_dir}" -maxdepth 1 -name 'ubuntu-*.iso' -print -quit 2>/dev/null)" || true
-
-    if [[ -z "${iso_file}" ]]; then
-        log_error "No Ubuntu ISO found in ${iso_dir}"
-        log_info "Download one with:"
-        log_info "  sudo mkdir -p ${iso_dir}"
-        log_info "  sudo wget -O ${iso_dir}/ubuntu-25.10-desktop-amd64.iso \\"
-        log_info "    https://releases.ubuntu.com/25.10/ubuntu-25.10-desktop-amd64.iso"
-        return "${EXIT_GENERAL_ERROR}"
-    fi
+    # shellcheck disable=SC2119
+    iso_file="$(_download_ubuntu_iso)" || return $?
     log_info "  ISO:     ${iso_file}"
 
     # Create disk
@@ -1336,12 +1390,14 @@ instance-id: ${VM_NAME}
 local-hostname: ${VM_NAME}
 EOF
 
-        # Network config for /32 mode
+        # Network config — detect prefix length from host
+        local prefix_len
+        prefix_len="$(_host_prefix_len)"
         cat > "${ci_dir}/network-config" << EOF
 version: 2
 ethernets:
   enp1s0:
-    addresses: [${VM_IP}/32]
+    addresses: [${VM_IP}/${prefix_len}]
     routes:
       - on-link: true
         to: 0.0.0.0/0
