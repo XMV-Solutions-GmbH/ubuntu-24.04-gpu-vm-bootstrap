@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# GitHub Release Workflow
+# Creates a release with the bootstrap script when a tag is pushed
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate script syntax
+        run: |
+          bash -n gpu-vm-bootstrap.sh
+          bash -n vmctl.sh
+
+      - name: Run unit tests
+        run: |
+          if command -v bats &> /dev/null; then
+            bats tests/unit/
+          else
+            echo "BATS not installed, skipping unit tests"
+          fi
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: GPU VM Bootstrap ${{ steps.version.outputs.VERSION }}
+          body: |
+            ## Installation
+
+            ```bash
+            # One-liner install
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/gpu-vm-bootstrap.sh | bash
+
+            # Or download and review first
+            curl -fsSL https://github.com/${{ github.repository }}/releases/latest/download/gpu-vm-bootstrap.sh -o gpu-vm-bootstrap.sh
+            chmod +x gpu-vm-bootstrap.sh
+            sudo ./gpu-vm-bootstrap.sh
+            ```
+
+            ## Changes
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          files: |
+            gpu-vm-bootstrap.sh
+            vmctl.sh
+          draft: false
+          prerelease: false
+          generate_release_notes: true
