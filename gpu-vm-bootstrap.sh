@@ -179,7 +179,7 @@ show_banner() {
     cat >&2 << 'EOF'
 
     ╔═══════════════════════════════════════════════════════╗
-    ║       Ubuntu 24.04 GPU VM Bootstrap                  ║
+    ║       Ubuntu 24.04 GPU VM Bootstrap                   ║
     ║       GPU-accelerated virtualisation host setup       ║
     ╚═══════════════════════════════════════════════════════╝
 
@@ -379,6 +379,47 @@ check_network() {
     return "${EXIT_SUCCESS}"
 }
 
+# Check for Secure Boot — NVIDIA drivers require it to be disabled
+check_secure_boot() {
+    log_step "secureboot" "Checking Secure Boot status..."
+
+    # mokutil may not be installed; install it if needed
+    if ! is_command_available mokutil; then
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log_dry_run "Would install mokutil to check Secure Boot"
+            log_info "Secure Boot check skipped in dry-run"
+            return 0
+        fi
+        ensure_pkg_installed mokutil
+    fi
+
+    local sb_state=""
+    sb_state="$(mokutil --sb-state 2>&1 || true)"
+
+    if echo "${sb_state}" | grep -qi "SecureBoot enabled"; then
+        log_error "Secure Boot is enabled"
+        log_error ""
+        log_error "NVIDIA proprietary drivers cannot be loaded with Secure Boot enabled"
+        log_error "unless MOK (Machine Owner Key) enrollment is configured."
+        log_error ""
+        log_error "To disable Secure Boot:"
+        log_error "  1. Reboot and enter BIOS/UEFI setup (usually DEL, F2, or F12)"
+        log_error "  2. Navigate to Security → Secure Boot"
+        log_error "  3. Set Secure Boot to 'Disabled'"
+        log_error "  4. Save and exit BIOS"
+        log_error "  5. Re-run this script"
+        log_error ""
+        log_error "For remote/headless servers (e.g. Hetzner, OVH):"
+        log_error "  - Use the provider's rescue system or KVM console to access BIOS"
+        log_error "  - Some providers offer a web-based BIOS/IPMI interface"
+        log_error "  - Check your provider's documentation for Secure Boot settings"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Secure Boot is disabled"
+    return "${EXIT_SUCCESS}"
+}
+
 # Run all pre-flight checks
 run_preflight_checks() {
     log_phase "0" "Pre-flight Checks"
@@ -390,6 +431,8 @@ run_preflight_checks() {
     check_root
 
     check_network
+
+    check_secure_boot
 
     log_success "All pre-flight checks passed"
 }
@@ -1301,8 +1344,12 @@ detect_primary_nic() {
     # Detect DNS servers from systemd-resolved or resolv.conf
     local dns_servers=""
     if command -v resolvectl &>/dev/null; then
+        # Extract only IPv4 DNS addresses; resolvectl output contains IPv6
+        # addresses with colons that interfere with naive sed parsing
         dns_servers="$(resolvectl dns "${PRIMARY_NIC}" 2>/dev/null \
-            | sed -n 's/.*: *//p' | tr ' ' ',')"
+            | sed 's/^[^)]*): *//' \
+            | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' \
+            | tr '\n' ',' | sed 's/,$//')"
     fi
     if [[ -z "${dns_servers}" ]] && [[ -f "/etc/resolv.conf" ]]; then
         dns_servers="$(sed -n 's/^nameserver \([0-9.]*\)/\1/p' /etc/resolv.conf \
