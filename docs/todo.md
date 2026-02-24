@@ -73,10 +73,10 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Detect primary network interface                  | Auto-detect active NIC                         |
-| ⚪     | Create bridge interface                           | Netplan configuration for `br0`                |
-| ⚪     | Configure bridge with existing IP                 | Migrate host IP to bridge                      |
-| ⚪     | Verify bridge connectivity                        | Ensure no network loss                         |
+| 🟢     | Detect primary network interface                  | Auto-detect via default route, gather IP/GW/DNS |
+| 🟢     | Create bridge interface                           | Netplan configuration for `br0` with backup     |
+| 🟢     | Configure bridge with existing IP                 | Migrate host IP to bridge, static or DHCP       |
+| 🟢     | Verify bridge connectivity                        | Interface state, IP, routing, gateway ping      |
 
 #### Phase 6: Bootstrap Script — vmctl Installation
 

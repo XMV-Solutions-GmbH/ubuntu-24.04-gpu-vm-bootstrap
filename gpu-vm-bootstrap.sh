@@ -1254,13 +1254,271 @@ phase_vfio_setup() {
 }
 
 # =============================================================================
-# Phase Stubs (to be implemented in subsequent phases)
+# Phase 4: Bridge Network Setup
 # =============================================================================
 
-phase_bridge_setup() {
-    log_info "Bridge network setup — not yet implemented"
+# Detect the primary network interface (the one with the default route)
+detect_primary_nic() {
+    log_step "bridge" "Detecting primary network interface..."
+
+    local nic=""
+    # Use ip route to find the interface carrying the default route
+    nic="$(ip route show default 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -n1)"
+
+    if [[ -z "${nic}" ]]; then
+        log_error "Could not detect primary network interface — no default route found"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    export PRIMARY_NIC="${nic}"
+    log_success "Primary NIC detected: ${PRIMARY_NIC}"
+
+    # Gather current IP configuration for migration
+    local ip_addr=""
+    ip_addr="$(ip -4 addr show dev "${PRIMARY_NIC}" 2>/dev/null \
+        | sed -n 's/.*inet \([0-9./]*\).*/\1/p' | head -n1)"
+
+    if [[ -n "${ip_addr}" ]]; then
+        export PRIMARY_NIC_IP="${ip_addr}"
+        log_info "Current IP: ${PRIMARY_NIC_IP}"
+    else
+        export PRIMARY_NIC_IP=""
+        log_warn "No IPv4 address found on ${PRIMARY_NIC}"
+    fi
+
+    # Detect current gateway
+    local gateway=""
+    gateway="$(ip route show default 2>/dev/null | sed -n 's/.*via \([0-9.]*\).*/\1/p' | head -n1)"
+
+    if [[ -n "${gateway}" ]]; then
+        export PRIMARY_NIC_GATEWAY="${gateway}"
+        log_info "Gateway: ${PRIMARY_NIC_GATEWAY}"
+    else
+        export PRIMARY_NIC_GATEWAY=""
+        log_warn "No default gateway detected"
+    fi
+
+    # Detect DNS servers from systemd-resolved or resolv.conf
+    local dns_servers=""
+    if command -v resolvectl &>/dev/null; then
+        dns_servers="$(resolvectl dns "${PRIMARY_NIC}" 2>/dev/null \
+            | sed -n 's/.*: *//p' | tr ' ' ',')"
+    fi
+    if [[ -z "${dns_servers}" ]] && [[ -f "/etc/resolv.conf" ]]; then
+        dns_servers="$(sed -n 's/^nameserver \([0-9.]*\)/\1/p' /etc/resolv.conf \
+            | head -n3 | tr '\n' ',' | sed 's/,$//')"
+    fi
+
+    export PRIMARY_NIC_DNS="${dns_servers:-}"
+    if [[ -n "${PRIMARY_NIC_DNS}" ]]; then
+        log_info "DNS servers: ${PRIMARY_NIC_DNS}"
+    fi
+
     return 0
 }
+
+# Create a Netplan bridge configuration that migrates the host IP to the bridge
+configure_bridge_interface() {
+    log_step "bridge" "Configuring bridge interface: ${BRIDGE_NAME}..."
+
+    if [[ -z "${PRIMARY_NIC:-}" ]]; then
+        log_error "Primary NIC not detected — run detect_primary_nic first"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    local netplan_dir="${NETPLAN_DIR:-/etc/netplan}"
+    local netplan_file="${netplan_dir}/60-bridge-${BRIDGE_NAME}.yaml"
+
+    # Skip if Netplan config already exists and contains the bridge
+    if [[ -f "${netplan_file}" ]] && grep -q "${BRIDGE_NAME}" "${netplan_file}" 2>/dev/null; then
+        log_debug "Bridge Netplan config already exists: ${netplan_file}"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would create Netplan bridge config: ${netplan_file}"
+        log_dry_run "Would bridge NIC ${PRIMARY_NIC} into ${BRIDGE_NAME}"
+        if [[ -n "${PRIMARY_NIC_IP:-}" ]]; then
+            log_dry_run "Would assign IP ${PRIMARY_NIC_IP} to ${BRIDGE_NAME}"
+        fi
+        return 0
+    fi
+
+    # Back up existing Netplan configs
+    local backup_dir=""
+    backup_dir="${netplan_dir}/backup-$(date +%Y%m%d%H%M%S)"
+    mkdir -p "${backup_dir}"
+    local backed_up=false
+    for f in "${netplan_dir}"/*.yaml; do
+        if [[ -f "${f}" ]]; then
+            cp "${f}" "${backup_dir}/"
+            backed_up=true
+        fi
+    done
+    if [[ "${backed_up}" == "true" ]]; then
+        log_info "Existing Netplan configs backed up to: ${backup_dir}"
+    fi
+
+    # Determine addressing mode
+    local addressing="dhcp4: true"
+    if [[ -n "${PRIMARY_NIC_IP:-}" ]]; then
+        addressing="addresses: [${PRIMARY_NIC_IP}]"
+    fi
+
+    # Build gateway and DNS sections
+    local routes_section=""
+    if [[ -n "${PRIMARY_NIC_GATEWAY:-}" ]]; then
+        routes_section="      routes:
+        - to: default
+          via: ${PRIMARY_NIC_GATEWAY}"
+    fi
+
+    local dns_section=""
+    if [[ -n "${PRIMARY_NIC_DNS:-}" ]]; then
+        # Convert comma-separated DNS to YAML list
+        local dns_yaml=""
+        IFS=',' read -ra dns_arr <<< "${PRIMARY_NIC_DNS}"
+        for dns in "${dns_arr[@]}"; do
+            dns="${dns// /}"
+            if [[ -n "${dns}" ]]; then
+                dns_yaml="${dns_yaml}${dns_yaml:+, }${dns}"
+            fi
+        done
+        if [[ -n "${dns_yaml}" ]]; then
+            dns_section="      nameservers:
+        addresses: [${dns_yaml}]"
+        fi
+    fi
+
+    # Disable DHCP on the physical NIC and enslave it to the bridge
+    cat > "${netplan_file}" << EOF
+# Bridge network configuration for GPU VM host
+# Generated by gpu-vm-bootstrap
+# Primary NIC: ${PRIMARY_NIC} → Bridge: ${BRIDGE_NAME}
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    ${PRIMARY_NIC}:
+      dhcp4: false
+      dhcp6: false
+  bridges:
+    ${BRIDGE_NAME}:
+      interfaces: [${PRIMARY_NIC}]
+      ${addressing}
+${routes_section:+${routes_section}
+}${dns_section:+${dns_section}
+}      parameters:
+        stp: true
+        forward-delay: 4
+EOF
+
+    # Netplan files must be readable only by root
+    chmod 600 "${netplan_file}"
+    log_success "Created Netplan bridge config: ${netplan_file}"
+
+    return 0
+}
+
+# Apply the Netplan configuration to activate the bridge
+apply_bridge_config() {
+    log_step "bridge" "Applying bridge configuration..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would run 'netplan apply' to activate bridge"
+        return 0
+    fi
+
+    log_warn "Applying bridge config — brief network interruption expected"
+
+    if ! netplan apply >> "${LOG_FILE}" 2>&1; then
+        log_error "netplan apply failed — check ${LOG_FILE} for details"
+        log_warn "Network state may be inconsistent; review manually"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Bridge configuration applied"
+    return 0
+}
+
+# Verify bridge is operational and network connectivity is intact
+verify_bridge_connectivity() {
+    log_step "bridge" "Verifying bridge connectivity..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would verify bridge ${BRIDGE_NAME} is operational"
+        log_dry_run "Would verify network connectivity"
+        return 0
+    fi
+
+    # Check bridge interface exists
+    if ! ip link show "${BRIDGE_NAME}" &>/dev/null; then
+        log_error "Bridge interface ${BRIDGE_NAME} does not exist"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    # Check bridge is in UP state
+    local bridge_state=""
+    bridge_state="$(ip -br link show "${BRIDGE_NAME}" 2>/dev/null | awk '{print $2}')"
+    if [[ "${bridge_state}" != "UP" ]]; then
+        log_warn "Bridge ${BRIDGE_NAME} is in state: ${bridge_state:-UNKNOWN}"
+    else
+        log_success "Bridge ${BRIDGE_NAME} is UP"
+    fi
+
+    # Check bridge has an IP address
+    local bridge_ip=""
+    bridge_ip="$(ip -4 addr show dev "${BRIDGE_NAME}" 2>/dev/null \
+        | sed -n 's/.*inet \([0-9./]*\).*/\1/p' | head -n1)"
+
+    if [[ -n "${bridge_ip}" ]]; then
+        log_success "Bridge IP: ${bridge_ip}"
+    else
+        log_warn "Bridge ${BRIDGE_NAME} has no IPv4 address yet"
+    fi
+
+    # Check bridge has members
+    local member_count=0
+    if command -v bridge &>/dev/null; then
+        member_count="$(bridge link show master "${BRIDGE_NAME}" 2>/dev/null | wc -l)"
+    fi
+    log_info "Bridge members: ${member_count}"
+
+    # Verify default route goes through the bridge
+    local route_dev=""
+    route_dev="$(ip route show default 2>/dev/null | sed -n 's/.*dev \([^ ]*\).*/\1/p' | head -n1)"
+    if [[ "${route_dev}" == "${BRIDGE_NAME}" ]]; then
+        log_success "Default route via ${BRIDGE_NAME}"
+    else
+        log_warn "Default route via ${route_dev:-UNKNOWN} (expected ${BRIDGE_NAME})"
+    fi
+
+    # Test network connectivity with a simple ping
+    local gateway="${PRIMARY_NIC_GATEWAY:-}"
+    if [[ -n "${gateway}" ]]; then
+        if ping -c1 -W3 "${gateway}" &>/dev/null; then
+            log_success "Gateway ${gateway} reachable"
+        else
+            log_warn "Cannot reach gateway ${gateway}"
+        fi
+    fi
+
+    return 0
+}
+
+# Phase 4 orchestrator: Bridge network setup
+phase_bridge_setup() {
+    detect_primary_nic || return $?
+    configure_bridge_interface || return $?
+    apply_bridge_config || return $?
+    verify_bridge_connectivity || return $?
+
+    return 0
+}
+
+# =============================================================================
+# Phase Stubs (to be implemented in subsequent phases)
+# =============================================================================
 
 phase_vmctl_install() {
     log_info "vmctl installation — not yet implemented"
