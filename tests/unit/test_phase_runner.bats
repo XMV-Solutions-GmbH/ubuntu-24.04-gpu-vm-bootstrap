@@ -91,10 +91,12 @@ EOF
     [[ "$output" == *"DRY-RUN"* ]]
 }
 
-@test "phase_vfio_setup_stub_succeeds" {
+@test "phase_vfio_setup_dryRun_succeeds" {
+    export DRY_RUN=true
+
     run phase_vfio_setup
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"not yet implemented"* ]]
+    [[ "$output" == *"DRY-RUN"* ]]
 }
 
 @test "phase_bridge_setup_stub_succeeds" {
