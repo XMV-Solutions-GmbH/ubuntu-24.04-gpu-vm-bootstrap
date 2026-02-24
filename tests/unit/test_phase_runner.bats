@@ -121,10 +121,15 @@ MOCK
     [[ "$output" == *"DRY-RUN"* ]]
 }
 
-@test "phase_vmctl_install_stub_succeeds" {
+@test "phase_vmctl_install_dryRun_succeeds" {
+    export DRY_RUN=true
+    export VMCTL_INSTALL_PATH="$TEST_TMP_DIR/usr/local/bin/vmctl"
+    mkdir -p "$TEST_TMP_DIR/usr/local/bin"
+    export CONFIG_DIR="$TEST_TMP_DIR/etc/vmctl"
+
     run phase_vmctl_install
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"not yet implemented"* ]]
+    [[ "$output" == *"DRY-RUN"* ]]
 }
 
 # =============================================================================

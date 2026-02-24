@@ -1,0 +1,512 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC2034
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# vmctl — GPU VM management CLI for Ubuntu 24.04 hosts
+# Thin wrapper around virsh/virt-install for simplified VM management.
+#
+# Copyright (c) 2024-2026 XMV Solutions GmbH
+# See LICENCE files for details.
+
+set -euo pipefail
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+readonly VMCTL_NAME="vmctl"
+readonly VMCTL_VERSION="0.1.0-dev"
+readonly VMCTL_CONFIG_DIR="${VMCTL_CONFIG_DIR:-/etc/vmctl}"
+readonly VMCTL_MANAGED_TAG="managed-by-vmctl"
+
+# Exit codes
+readonly EXIT_SUCCESS=0
+readonly EXIT_GENERAL_ERROR=1
+readonly EXIT_INVALID_ARGS=2
+readonly EXIT_VM_NOT_FOUND=3
+
+# Colour codes (disabled when stdout is not a terminal)
+if [[ -t 1 ]]; then
+    readonly CLR_RED='\033[0;31m'
+    readonly CLR_GREEN='\033[0;32m'
+    readonly CLR_YELLOW='\033[1;33m'
+    readonly CLR_BLUE='\033[0;34m'
+    readonly CLR_CYAN='\033[0;36m'
+    readonly CLR_BOLD='\033[1m'
+    readonly CLR_DIM='\033[2m'
+    readonly CLR_RESET='\033[0m'
+else
+    readonly CLR_RED=''
+    readonly CLR_GREEN=''
+    readonly CLR_YELLOW=''
+    readonly CLR_BLUE=''
+    readonly CLR_CYAN=''
+    readonly CLR_BOLD=''
+    readonly CLR_DIM=''
+    readonly CLR_RESET=''
+fi
+
+# =============================================================================
+# Logging
+# =============================================================================
+
+_log() {
+    local level="$1"
+    shift
+    local colour=""
+    case "${level}" in
+        INFO)  colour="${CLR_BLUE}" ;;
+        OK)    colour="${CLR_GREEN}" ;;
+        WARN)  colour="${CLR_YELLOW}" ;;
+        ERROR) colour="${CLR_RED}" ;;
+        *)     colour="" ;;
+    esac
+    printf '%b[%s]%b %s\n' "${colour}" "${level}" "${CLR_RESET}" "$*" >&2
+}
+
+log_info()    { _log INFO "$@"; }
+log_success() { _log OK "$@"; }
+log_warn()    { _log WARN "$@"; }
+log_error()   { _log ERROR "$@"; }
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+# Check a dependency is available
+_require_command() {
+    local cmd="$1"
+    local pkg="${2:-$1}"
+    if ! command -v "${cmd}" &>/dev/null; then
+        log_error "'${cmd}' is not installed (apt install ${pkg})"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+}
+
+# Verify a VM exists by name, return domain UUID
+_vm_exists() {
+    local name="$1"
+    virsh dominfo "${name}" &>/dev/null
+}
+
+# Get VM state (running, shut off, paused, etc.)
+_vm_state() {
+    local name="$1"
+    virsh domstate "${name}" 2>/dev/null | head -n1
+}
+
+# Get VM IP address via QEMU guest agent or ARP
+_vm_ip() {
+    local name="$1"
+
+    # Try QEMU guest agent first
+    local ip=""
+    ip="$(virsh domifaddr "${name}" --source agent 2>/dev/null \
+        | awk '/ipv4/ && !/127\.0\.0\.1/ {gsub(/\/.*/, "", $4); print $4; exit}')"
+
+    if [[ -n "${ip}" ]]; then
+        echo "${ip}"
+        return 0
+    fi
+
+    # Fall back to lease/ARP lookup
+    ip="$(virsh domifaddr "${name}" 2>/dev/null \
+        | awk '/ipv4/ {gsub(/\/.*/, "", $4); print $4; exit}')"
+
+    if [[ -n "${ip}" ]]; then
+        echo "${ip}"
+        return 0
+    fi
+
+    echo "—"
+    return 0
+}
+
+# =============================================================================
+# Subcommands — VM Lifecycle
+# =============================================================================
+
+# vmctl list — list all VMs with state, IP, vCPUs, memory
+cmd_list() {
+    _require_command virsh libvirt-clients || return $?
+
+    # Table header
+    printf '%b%-20s %-12s %-16s %6s %8s%b\n' \
+        "${CLR_BOLD}" "NAME" "STATE" "IP" "VCPUS" "MEM(MB)" "${CLR_RESET}"
+    printf '%-20s %-12s %-16s %6s %8s\n' \
+        "────────────────────" "────────────" "────────────────" "──────" "────────"
+
+    # List all domains (running + inactive)
+    local domains=""
+    domains="$(virsh list --all --name 2>/dev/null | grep -v '^$')" || true
+
+    if [[ -z "${domains}" ]]; then
+        log_info "No VMs found"
+        return 0
+    fi
+
+    while IFS= read -r name; do
+        local state=""
+        state="$(_vm_state "${name}")"
+
+        local ip="—"
+        if [[ "${state}" == "running" ]]; then
+            ip="$(_vm_ip "${name}")"
+        fi
+
+        local vcpus=""
+        vcpus="$(virsh dominfo "${name}" 2>/dev/null \
+            | awk '/CPU\(s\)/ {print $2}')"
+
+        local mem_kb=""
+        mem_kb="$(virsh dominfo "${name}" 2>/dev/null \
+            | awk '/Max memory/ {print $3}')"
+        local mem_mb=$(( ${mem_kb:-0} / 1024 ))
+
+        # Colour-code state
+        local state_colour=""
+        case "${state}" in
+            running) state_colour="${CLR_GREEN}" ;;
+            "shut off") state_colour="${CLR_DIM}" ;;
+            paused) state_colour="${CLR_YELLOW}" ;;
+            *) state_colour="${CLR_RED}" ;;
+        esac
+
+        printf '%-20s %b%-12s%b %-16s %6s %8s\n' \
+            "${name}" "${state_colour}" "${state}" "${CLR_RESET}" \
+            "${ip}" "${vcpus:-—}" "${mem_mb}"
+    done <<< "${domains}"
+}
+
+# vmctl info <name> — show detailed VM information
+cmd_info() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl info <name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    local state=""
+    state="$(_vm_state "${name}")"
+
+    local vcpus=""
+    vcpus="$(virsh dominfo "${name}" 2>/dev/null \
+        | awk '/CPU\(s\)/ {print $2}')"
+
+    local mem_kb=""
+    mem_kb="$(virsh dominfo "${name}" 2>/dev/null \
+        | awk '/Max memory/ {print $3}')"
+    local mem_mb=$(( ${mem_kb:-0} / 1024 ))
+
+    local uuid=""
+    uuid="$(virsh domuuid "${name}" 2>/dev/null)" || uuid="—"
+
+    local ip="—"
+    if [[ "${state}" == "running" ]]; then
+        ip="$(_vm_ip "${name}")"
+    fi
+
+    local autostart=""
+    autostart="$(virsh dominfo "${name}" 2>/dev/null \
+        | awk '/Autostart/ {print $2}')" || autostart="—"
+
+    echo ""
+    printf '%b  VM: %s%b\n' "${CLR_BOLD}" "${name}" "${CLR_RESET}"
+    echo "  ──────────────────────────────────"
+    printf '  %-14s %s\n' "State:" "${state}"
+    printf '  %-14s %s\n' "UUID:" "${uuid}"
+    printf '  %-14s %s\n' "vCPUs:" "${vcpus:-—}"
+    printf '  %-14s %s MB\n' "Memory:" "${mem_mb}"
+    printf '  %-14s %s\n' "IP:" "${ip}"
+    printf '  %-14s %s\n' "Autostart:" "${autostart}"
+
+    # Show attached PCI devices (GPUs)
+    local pci_devs=""
+    pci_devs="$(virsh dumpxml "${name}" 2>/dev/null \
+        | grep -A5 '<hostdev.*pci' \
+        | grep '<address.*bus' \
+        | sed 's/.*bus=.\(0x[^"]*\).*slot=.\(0x[^"]*\).*function=.\(0x[^"]*\).*/  GPU PCI:       \1:\2.\3/' \
+        )" || true
+
+    if [[ -n "${pci_devs}" ]]; then
+        echo "${pci_devs}"
+    fi
+
+    echo ""
+}
+
+# vmctl start <name>
+cmd_start() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl start <name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    local state=""
+    state="$(_vm_state "${name}")"
+
+    if [[ "${state}" == "running" ]]; then
+        log_info "VM '${name}' is already running"
+        return 0
+    fi
+
+    log_info "Starting VM '${name}'..."
+    if virsh start "${name}" &>/dev/null; then
+        log_success "VM '${name}' started"
+    else
+        log_error "Failed to start VM '${name}'"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+}
+
+# vmctl stop <name> — graceful shutdown
+cmd_stop() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl stop <name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    local state=""
+    state="$(_vm_state "${name}")"
+
+    if [[ "${state}" == "shut off" ]]; then
+        log_info "VM '${name}' is already stopped"
+        return 0
+    fi
+
+    log_info "Shutting down VM '${name}'..."
+    if virsh shutdown "${name}" &>/dev/null; then
+        log_success "Shutdown signal sent to VM '${name}'"
+        log_info "Use 'vmctl list' to check when the VM has stopped"
+    else
+        log_error "Failed to shut down VM '${name}'"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+}
+
+# vmctl delete <name> — remove VM and associated storage
+cmd_delete() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl delete <name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    local state=""
+    state="$(_vm_state "${name}")"
+
+    # Force-stop if running
+    if [[ "${state}" == "running" ]]; then
+        log_warn "VM '${name}' is running — forcing stop"
+        virsh destroy "${name}" &>/dev/null || true
+    fi
+
+    # Remove storage volumes
+    local volumes=""
+    volumes="$(virsh domblklist "${name}" --details 2>/dev/null \
+        | awk '/disk/ {print $4}' | grep -v '^$')" || true
+
+    if [[ -n "${volumes}" ]]; then
+        while IFS= read -r vol; do
+            if [[ -f "${vol}" ]]; then
+                log_info "Removing disk: ${vol}"
+                rm -f "${vol}"
+            fi
+        done <<< "${volumes}"
+    fi
+
+    # Undefine the VM (remove NVRAM for UEFI VMs)
+    if virsh undefine "${name}" --nvram &>/dev/null 2>&1; then
+        log_success "VM '${name}' deleted"
+    elif virsh undefine "${name}" &>/dev/null; then
+        log_success "VM '${name}' deleted"
+    else
+        log_error "Failed to undefine VM '${name}'"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+}
+
+# vmctl ssh <name> — SSH into a VM
+cmd_ssh() {
+    local name="${1:-}"
+    shift 2>/dev/null || true
+    local extra_args=("$@")
+
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl ssh <name> [-- ssh-args...]"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+    _require_command ssh openssh-client || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    local state=""
+    state="$(_vm_state "${name}")"
+
+    if [[ "${state}" != "running" ]]; then
+        log_error "VM '${name}' is not running (state: ${state})"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    local ip=""
+    ip="$(_vm_ip "${name}")"
+
+    if [[ "${ip}" == "—" || -z "${ip}" ]]; then
+        log_error "Cannot determine IP for VM '${name}'"
+        log_info "The VM may not have a guest agent installed"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Connecting to ${name} (${ip})..."
+    # shellcheck disable=SC2029
+    exec ssh -o StrictHostKeyChecking=accept-new "${extra_args[@]}" "${ip}"
+}
+
+# =============================================================================
+# Usage & Dispatch
+# =============================================================================
+
+show_usage() {
+    cat << 'EOF'
+vmctl — GPU VM management CLI
+
+Usage:
+  vmctl <command> [arguments]
+
+Commands:
+  list                List all VMs with state, IP, resources
+  info   <name>       Show detailed VM information
+  start  <name>       Start a stopped VM
+  stop   <name>       Gracefully shut down a VM
+  delete <name>       Delete a VM and its storage
+  ssh    <name>       SSH into a VM (Ubuntu VMs only)
+
+  gpu    status       Show GPU binding state
+  gpu    attach <vm>  Attach GPU to VM via VFIO
+  gpu    detach <vm>  Detach GPU from VM, rebind to host
+
+  ip     check        Scan bridge subnet for free IPs
+  ip     list         Show IPs assigned to managed VMs
+
+  create talos  ...   Create a Talos Linux VM (coming soon)
+  create ubuntu ...   Create an Ubuntu Desktop VM (coming soon)
+
+  version             Show version
+  help                Show this help
+
+Examples:
+  vmctl list
+  vmctl start my-vm
+  vmctl ssh my-vm
+  vmctl gpu status
+EOF
+}
+
+show_version() {
+    echo "${VMCTL_NAME} v${VMCTL_VERSION}"
+}
+
+# Stub subcommands (to be implemented in later phases)
+cmd_gpu() {
+    local subcmd="${1:-}"
+    case "${subcmd}" in
+        status|attach|detach)
+            log_info "vmctl gpu ${subcmd} — not yet implemented"
+            ;;
+        *)
+            log_error "Usage: vmctl gpu {status|attach|detach} [name]"
+            return "${EXIT_INVALID_ARGS}"
+            ;;
+    esac
+}
+
+cmd_ip() {
+    local subcmd="${1:-}"
+    case "${subcmd}" in
+        check|list)
+            log_info "vmctl ip ${subcmd} — not yet implemented"
+            ;;
+        *)
+            log_error "Usage: vmctl ip {check|list}"
+            return "${EXIT_INVALID_ARGS}"
+            ;;
+    esac
+}
+
+cmd_create() {
+    local vm_type="${1:-}"
+    case "${vm_type}" in
+        talos|ubuntu)
+            log_info "vmctl create ${vm_type} — not yet implemented"
+            ;;
+        *)
+            log_error "Usage: vmctl create {talos|ubuntu} [options]"
+            return "${EXIT_INVALID_ARGS}"
+            ;;
+    esac
+}
+
+# Main dispatcher
+main() {
+    local command="${1:-help}"
+    shift 2>/dev/null || true
+
+    case "${command}" in
+        list)    cmd_list "$@" ;;
+        info)    cmd_info "$@" ;;
+        start)   cmd_start "$@" ;;
+        stop)    cmd_stop "$@" ;;
+        delete)  cmd_delete "$@" ;;
+        ssh)     cmd_ssh "$@" ;;
+        gpu)     cmd_gpu "$@" ;;
+        ip)      cmd_ip "$@" ;;
+        create)  cmd_create "$@" ;;
+        version) show_version ;;
+        help|-h|--help) show_usage ;;
+        *)
+            log_error "Unknown command: '${command}'"
+            echo "" >&2
+            show_usage >&2
+            return "${EXIT_INVALID_ARGS}"
+            ;;
+    esac
+}
+
+# Only run main if script is executed directly (not sourced)
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
