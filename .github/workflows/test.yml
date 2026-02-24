@@ -34,28 +34,19 @@ jobs:
           shellcheck tests/run_tests.sh
           shellcheck tests/test_helper.bash
 
-  # Unit tests — run on all platforms without Docker
+  # Unit tests — Ubuntu only (this project targets Ubuntu 24.04)
   unit-tests:
     name: test-unit
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest]
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install bats-core (Ubuntu)
-        if: runner.os == 'Linux'
+      - name: Install bats-core
         run: |
           sudo apt-get update
           sudo apt-get install -y bats
-
-      - name: Install bats-core (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          brew install bats-core
 
       - name: Run unit tests
         run: |
@@ -66,7 +57,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-results-${{ matrix.os }}
+          name: unit-test-results
           path: tests/reports/
 
   # Harness tests are run manually on a real NVIDIA GPU machine

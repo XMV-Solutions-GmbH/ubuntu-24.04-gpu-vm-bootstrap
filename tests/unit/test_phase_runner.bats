@@ -63,10 +63,15 @@ teardown() {
 # Phase Stubs
 # =============================================================================
 
-@test "phase_nvidia_setup_stub_succeeds" {
+@test "phase_nvidia_setup_dryRun_succeeds" {
+    export DRY_RUN=true
+    local mock_dir
+    mock_dir="$(mock_nvidia_gpu)"
+    export PATH="$mock_dir:$PATH"
+
     run phase_nvidia_setup
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"not yet implemented"* ]]
+    [[ "$output" == *"DRY-RUN"* ]]
 }
 
 @test "phase_kvm_setup_stub_succeeds" {
