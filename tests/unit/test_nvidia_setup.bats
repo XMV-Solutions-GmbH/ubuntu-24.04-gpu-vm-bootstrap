@@ -164,6 +164,90 @@ EOF
 }
 
 # =============================================================================
+# ensure_kernel_headers() tests
+# =============================================================================
+
+@test "ensure_kernel_headers: skips when headers already installed" {
+    export VERBOSE=true
+
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/dpkg-query" << 'EOF'
+#!/bin/bash
+echo "install ok installed"
+exit 0
+EOF
+    chmod +x "$mock_dir/dpkg-query"
+
+    cat > "$mock_dir/uname" << 'EOF'
+#!/bin/bash
+echo "6.8.0-101-generic"
+EOF
+    chmod +x "$mock_dir/uname"
+    export PATH="$mock_dir:$PATH"
+
+    run ensure_kernel_headers
+    assert_status 0
+    assert_output_contains "already installed"
+}
+
+@test "ensure_kernel_headers: dry-run shows what would be installed" {
+    export DRY_RUN=true
+
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/dpkg-query" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$mock_dir/dpkg-query"
+
+    cat > "$mock_dir/uname" << 'EOF'
+#!/bin/bash
+echo "6.8.0-101-generic"
+EOF
+    chmod +x "$mock_dir/uname"
+    export PATH="$mock_dir:$PATH"
+
+    run ensure_kernel_headers
+    assert_status 0
+    assert_output_contains "DRY-RUN"
+    assert_output_contains "linux-headers-6.8.0-101-generic"
+}
+
+@test "ensure_kernel_headers: installs headers for running kernel" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/dpkg-query" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$mock_dir/dpkg-query"
+
+    cat > "$mock_dir/uname" << 'EOF'
+#!/bin/bash
+echo "6.8.0-90-generic"
+EOF
+    chmod +x "$mock_dir/uname"
+
+    cat > "$mock_dir/apt-get" << 'EOF'
+#!/bin/bash
+echo "$@" >> "$TEST_TMP_DIR/apt_calls.log"
+exit 0
+EOF
+    chmod +x "$mock_dir/apt-get"
+    export PATH="$mock_dir:$PATH"
+
+    run ensure_kernel_headers
+    assert_status 0
+    assert_output_contains "Kernel headers installed"
+    assert_file_contains "$TEST_TMP_DIR/apt_calls.log" "linux-headers-6.8.0-90-generic"
+}
+
+# =============================================================================
 # install_nvidia_drivers() tests
 # =============================================================================
 

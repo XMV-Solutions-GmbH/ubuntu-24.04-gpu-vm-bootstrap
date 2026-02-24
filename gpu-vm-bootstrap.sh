@@ -665,6 +665,36 @@ add_nvidia_repository() {
     return 0
 }
 
+# Ensure kernel headers are installed for the running kernel
+# DKMS requires these to build kernel modules (NVIDIA, VFIO, etc.)
+ensure_kernel_headers() {
+    log_step "headers" "Ensuring kernel headers are installed..."
+
+    local kernel_version
+    kernel_version="$(uname -r)"
+    local headers_pkg="linux-headers-${kernel_version}"
+
+    if is_pkg_installed "${headers_pkg}"; then
+        log_debug "Kernel headers already installed: ${headers_pkg}"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install ${headers_pkg}"
+        return 0
+    fi
+
+    log_info "Installing kernel headers for ${kernel_version}..."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${headers_pkg}" >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install ${headers_pkg}"
+        log_error "DKMS cannot build kernel modules without matching headers"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Kernel headers installed: ${headers_pkg}"
+    return 0
+}
+
 # Install NVIDIA drivers from the official repository
 install_nvidia_drivers() {
     log_step "driver" "Installing NVIDIA drivers..."
@@ -836,6 +866,7 @@ phase_nvidia_setup() {
 
     detect_nvidia_gpu || return $?
     add_nvidia_repository || return $?
+    ensure_kernel_headers || return $?
     install_nvidia_drivers || return $?
     install_cuda_toolkit || return $?
     install_nvidia_container_toolkit || return $?
