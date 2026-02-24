@@ -560,7 +560,7 @@ detect_nvidia_gpu() {
     export NVIDIA_GPU_PCI_SLOT
 
     # Extract vendor:device ID pair (e.g. 10de:20f1)
-    NVIDIA_GPU_PCI_ID="$(echo "${gpu_info}" | head -1 | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}\]' | head -1 | tr -d '[]' || true)"
+    NVIDIA_GPU_PCI_ID="$(echo "${gpu_info}" | head -1 | sed -n 's/.*\[\([0-9a-f]\{4\}:[0-9a-f]\{4\}\)\].*/\1/p' | head -1 || true)"
     export NVIDIA_GPU_PCI_ID
 
     log_debug "GPU PCI slot: ${NVIDIA_GPU_PCI_SLOT}"
@@ -660,7 +660,7 @@ install_cuda_toolkit() {
     # Check if CUDA is already installed
     if is_command_available nvcc; then
         local cuda_version
-        cuda_version="$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || true)"
+        cuda_version="$(nvcc --version 2>/dev/null | sed -n 's/.*release \([0-9]\{1,\}\.[0-9]\{1,\}\).*/\1/p' || true)"
         if [[ -n "${cuda_version}" ]]; then
             log_success "CUDA toolkit already installed (v${cuda_version})"
             return 0
