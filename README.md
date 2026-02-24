@@ -90,11 +90,17 @@ Options:
 After bootstrap, use `vmctl` to manage GPU-accelerated virtual machines:
 
 ```bash
-# Create a Talos Linux VM with GPU passthrough
-vmctl create talos --name talos-01 --gpu --cpus 4 --memory 8192
+# Create a Talos Linux VM with GPU passthrough (GPU attached by default)
+vmctl create talos --name talos-01 --cpus 4 --memory 8192
 
-# Create an Ubuntu Desktop VM
-vmctl create ubuntu --name desktop-01 --gpu --cpus 4 --memory 8192
+# Create an Ubuntu Desktop VM (auto-detects CPUs, memory, and name)
+vmctl create ubuntu
+
+# Create a VM without GPU passthrough
+vmctl create ubuntu --name headless-01 --no-gpu
+
+# Specify a static IP and MAC address
+vmctl create ubuntu --name desktop-01 --ip 192.168.1.100 --mac 52:54:00:ab:cd:ef
 
 # List all VMs
 vmctl list

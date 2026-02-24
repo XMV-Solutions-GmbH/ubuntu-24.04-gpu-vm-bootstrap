@@ -28,7 +28,7 @@ jobs:
       - name: Validate script syntax
         run: |
           bash -n gpu-vm-bootstrap.sh
-          bash -n vmctl.sh
+          bash -n vmctl
 
       - name: Run unit tests
         run: |
@@ -60,7 +60,7 @@ jobs:
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           files: |
             gpu-vm-bootstrap.sh
-            vmctl.sh
+            vmctl
           draft: false
           prerelease: false
           generate_release_notes: true

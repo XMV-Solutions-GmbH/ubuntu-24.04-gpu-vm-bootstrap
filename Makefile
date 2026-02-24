@@ -44,7 +44,7 @@ lint:
 	@echo "Linting shell scripts..."
 	@if command -v shellcheck >/dev/null 2>&1; then \
 		shellcheck gpu-vm-bootstrap.sh || true; \
-		shellcheck vmctl.sh || true; \
+		shellcheck vmctl || true; \
 		shellcheck tests/run_tests.sh || true; \
 		shellcheck tests/test_helper.bash || true; \
 		echo "✓ Linting passed"; \
@@ -80,7 +80,7 @@ fmt:
 	@echo "Formatting shell scripts..."
 	@if command -v shfmt >/dev/null 2>&1; then \
 		shfmt -w -i 4 gpu-vm-bootstrap.sh || true; \
-		shfmt -w -i 4 vmctl.sh || true; \
+		shfmt -w -i 4 vmctl || true; \
 		shfmt -w -i 4 tests/run_tests.sh || true; \
 		shfmt -w -i 4 tests/test_helper.bash || true; \
 		echo "✓ Formatting complete"; \
