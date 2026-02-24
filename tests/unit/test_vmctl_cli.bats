@@ -154,22 +154,36 @@ teardown() {
 # cmd_gpu — subcommand validation
 # =============================================================================
 
-@test "cmd_gpu_status_returnsStubMessage" {
-    run cmd_gpu status
+@test "cmd_gpu_status_showsGPUInfo" {
+    local mock_dir
+    mock_dir="$(mock_nvidia_gpu)"
+    export PATH="$mock_dir:$PATH"
+
+    run cmd_gpu_status
     assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_output_contains "GPU status"
 }
 
-@test "cmd_gpu_attach_returnsStubMessage" {
+@test "cmd_gpu_status_noGPU_showsWarning" {
+    local mock_dir
+    mock_dir="$(mock_no_nvidia_gpu)"
+    export PATH="$mock_dir:$PATH"
+
+    run cmd_gpu_status
+    assert_status 0
+    assert_output_contains "No NVIDIA GPUs found"
+}
+
+@test "cmd_gpu_attach_noName_returnsInvalidArgs" {
     run cmd_gpu attach
-    assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_status "$EXIT_INVALID_ARGS"
+    assert_output_contains "Usage"
 }
 
-@test "cmd_gpu_detach_returnsStubMessage" {
+@test "cmd_gpu_detach_noName_returnsInvalidArgs" {
     run cmd_gpu detach
-    assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_status "$EXIT_INVALID_ARGS"
+    assert_output_contains "Usage"
 }
 
 @test "cmd_gpu_invalidSubcommand_returnsError" {
@@ -188,16 +202,40 @@ teardown() {
 # cmd_ip — subcommand validation
 # =============================================================================
 
-@test "cmd_ip_check_returnsStubMessage" {
-    run cmd_ip check
+@test "cmd_ip_check_directRouteMode_showsWarning" {
+    # Mock ip route to return onlink (direct route mode)
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+echo "default via 88.198.21.129 dev enp4s0 proto static onlink"
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
+    run cmd_ip_check
     assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_output_contains "direct-route mode"
 }
 
-@test "cmd_ip_list_returnsStubMessage" {
-    run cmd_ip list
+@test "cmd_ip_list_noVMs_showsMessage" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/virsh" << 'MOCK'
+#!/bin/bash
+if [[ "$1" == "list" ]]; then
+    echo ""
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/virsh"
+    export PATH="$mock_dir:$PATH"
+
+    run cmd_ip_list
     assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_output_contains "No VMs"
 }
 
 @test "cmd_ip_invalidSubcommand_returnsError" {
@@ -216,16 +254,58 @@ teardown() {
 # cmd_create — subcommand validation
 # =============================================================================
 
-@test "cmd_create_talos_returnsStubMessage" {
+@test "cmd_create_talos_directRouteMode_noMac_returnsError" {
+    # Mock ip route to return onlink (direct route mode)
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+echo "default via 88.198.21.129 dev enp4s0 proto static onlink"
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    cat > "$mock_dir/virsh" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+    chmod +x "$mock_dir/virsh"
+    cat > "$mock_dir/virt-install" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+    chmod +x "$mock_dir/virt-install"
+    export PATH="$mock_dir:$PATH"
+
     run cmd_create talos
-    assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_status "$EXIT_INVALID_ARGS"
+    assert_output_contains "--mac"
 }
 
-@test "cmd_create_ubuntu_returnsStubMessage" {
+@test "cmd_create_ubuntu_directRouteMode_noMac_returnsError" {
+    # Mock ip route to return onlink (direct route mode)
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+echo "default via 88.198.21.129 dev enp4s0 proto static onlink"
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    cat > "$mock_dir/virsh" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+    chmod +x "$mock_dir/virsh"
+    cat > "$mock_dir/virt-install" << 'MOCK'
+#!/bin/bash
+exit 0
+MOCK
+    chmod +x "$mock_dir/virt-install"
+    export PATH="$mock_dir:$PATH"
+
     run cmd_create ubuntu
-    assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_status "$EXIT_INVALID_ARGS"
+    assert_output_contains "--mac"
 }
 
 @test "cmd_create_invalidType_returnsError" {
@@ -263,21 +343,35 @@ MOCK
 }
 
 @test "main_gpu_status_dispatches" {
+    local mock_dir
+    mock_dir="$(mock_nvidia_gpu)"
+    export PATH="$mock_dir:$PATH"
+
     run main gpu status
     assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_output_contains "GPU status"
 }
 
-@test "main_ip_check_dispatches" {
-    run main ip check
+@test "main_ip_list_dispatches" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/virsh" << 'MOCK'
+#!/bin/bash
+echo ""
+exit 0
+MOCK
+    chmod +x "$mock_dir/virsh"
+    export PATH="$mock_dir:$PATH"
+
+    run main ip list
     assert_status 0
-    assert_output_contains "not yet implemented"
+    assert_output_contains "VM"
 }
 
-@test "main_create_talos_dispatches" {
-    run main create talos
-    assert_status 0
-    assert_output_contains "not yet implemented"
+@test "main_create_invalidType_returnsError" {
+    run main create nonsense
+    assert_status "$EXIT_INVALID_ARGS"
+    assert_output_contains "Usage"
 }
 
 # =============================================================================
