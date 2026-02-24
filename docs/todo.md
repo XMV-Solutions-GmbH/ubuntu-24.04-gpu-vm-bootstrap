@@ -63,11 +63,11 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Detect CPU vendor (Intel/AMD)                    | For correct IOMMU parameter                     |
-| ⚪     | Configure GRUB for IOMMU                         | `intel_iommu=on` or `amd_iommu=on`              |
-| ⚪     | Configure VFIO modules                           | `/etc/modules`, modprobe config                 |
-| ⚪     | Detect IOMMU groups                              | For GPU isolation verification                  |
-| ⚪     | Handle reboot requirement                        | Inform user, support `--reboot` flag            |
+| 🟢     | Detect CPU vendor (Intel/AMD)                    | `/proc/cpuinfo` parsing, sets `IOMMU_PARAM`     |
+| 🟢     | Configure GRUB for IOMMU                         | `intel_iommu=on` or `amd_iommu=on` + `iommu=pt` |
+| 🟢     | Configure VFIO modules                           | `/etc/modules`, modprobe config, initramfs      |
+| 🟢     | Detect IOMMU groups                              | Sysfs enumeration, GPU isolation check          |
+| 🟢     | Handle reboot requirement                        | Inform user, support `--reboot` flag            |
 
 #### Phase 5: Bootstrap Script — Bridge Network
 

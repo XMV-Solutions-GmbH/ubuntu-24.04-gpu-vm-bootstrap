@@ -994,13 +994,268 @@ phase_kvm_setup() {
 }
 
 # =============================================================================
-# Phase Stubs (to be implemented in subsequent phases)
+# Phase 3: IOMMU/VFIO Configuration
 # =============================================================================
 
-phase_vfio_setup() {
-    log_info "IOMMU/VFIO configuration — not yet implemented"
+# Detect CPU vendor for correct IOMMU parameter
+detect_cpu_vendor() {
+    log_step "cpu" "Detecting CPU vendor..."
+
+    local vendor_id
+    vendor_id="$(grep -m1 'vendor_id' /proc/cpuinfo 2>/dev/null | awk '{print $NF}' || true)"
+
+    case "${vendor_id}" in
+        GenuineIntel)
+            CPU_VENDOR="intel"
+            IOMMU_PARAM="intel_iommu=on"
+            log_success "Intel CPU detected"
+            ;;
+        AuthenticAMD)
+            CPU_VENDOR="amd"
+            IOMMU_PARAM="amd_iommu=on"
+            log_success "AMD CPU detected"
+            ;;
+        *)
+            log_error "Unknown CPU vendor: '${vendor_id:-empty}'"
+            log_error "Cannot determine correct IOMMU parameter"
+            return "${EXIT_GENERAL_ERROR}"
+            ;;
+    esac
+
+    export CPU_VENDOR
+    export IOMMU_PARAM
+
     return 0
 }
+
+# Configure GRUB with IOMMU kernel parameters
+configure_grub_iommu() {
+    log_step "grub" "Configuring GRUB for IOMMU..."
+
+    local grub_file="${GRUB_DEFAULT_FILE:-/etc/default/grub}"
+    local iommu_params="${IOMMU_PARAM} iommu=pt"
+
+    # Check if already configured
+    local all_set=true
+    for param in ${iommu_params}; do
+        if ! is_grub_param_set "${param}"; then
+            all_set=false
+            break
+        fi
+    done
+
+    if [[ "${all_set}" == "true" ]]; then
+        log_success "GRUB IOMMU parameters already configured"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would add to GRUB_CMDLINE_LINUX_DEFAULT: ${iommu_params}"
+        log_dry_run "Would run update-grub"
+        return 0
+    fi
+
+    if [[ ! -f "${grub_file}" ]]; then
+        log_error "GRUB configuration file not found: ${grub_file}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    # Back up current GRUB config
+    cp "${grub_file}" "${grub_file}.bak.$(date +%Y%m%d%H%M%S)"
+    log_debug "Backed up ${grub_file}"
+
+    # Read current GRUB_CMDLINE_LINUX_DEFAULT value
+    local current_line
+    current_line="$(grep '^GRUB_CMDLINE_LINUX_DEFAULT=' "${grub_file}" || true)"
+
+    if [[ -z "${current_line}" ]]; then
+        # No existing line — add one
+        echo "GRUB_CMDLINE_LINUX_DEFAULT=\"${iommu_params}\"" >> "${grub_file}"
+    else
+        # Extract current value (strip quotes and prefix)
+        local current_value="${current_line#GRUB_CMDLINE_LINUX_DEFAULT=\"}"
+        current_value="${current_value%\"}"
+
+        # Append missing parameters
+        local new_value="${current_value}"
+        for param in ${iommu_params}; do
+            if [[ "${new_value}" != *"${param}"* ]]; then
+                new_value="${new_value} ${param}"
+            fi
+        done
+
+        # Trim leading/trailing whitespace
+        new_value="$(echo "${new_value}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+        # Replace the line in grub file
+        sed -i "s|^GRUB_CMDLINE_LINUX_DEFAULT=.*|GRUB_CMDLINE_LINUX_DEFAULT=\"${new_value}\"|" "${grub_file}"
+    fi
+
+    log_success "GRUB IOMMU parameters configured: ${iommu_params}"
+
+    # Update GRUB
+    log_info "Running update-grub..."
+    if ! update-grub >> "${LOG_FILE}" 2>&1; then
+        log_error "update-grub failed"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "GRUB updated"
+    VFIO_REBOOT_REQUIRED=true
+    return 0
+}
+
+# Configure VFIO kernel modules
+configure_vfio_modules() {
+    log_step "vfio" "Configuring VFIO kernel modules..."
+
+    local modules_file="/etc/modules"
+    local modprobe_conf="/etc/modprobe.d/vfio.conf"
+
+    local vfio_modules=(vfio vfio_iommu_type1 vfio_pci)
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would add VFIO modules to ${modules_file}"
+        if [[ "${GPU_MODE}" == "exclusive" && -n "${NVIDIA_GPU_PCI_ID:-}" ]]; then
+            log_dry_run "Would configure VFIO PCI IDs in ${modprobe_conf}"
+        fi
+        log_dry_run "Would run update-initramfs -u"
+        return 0
+    fi
+
+    # Add VFIO modules to /etc/modules for auto-loading at boot
+    local modules_changed=false
+    for mod in "${vfio_modules[@]}"; do
+        if ! is_line_in_file "${modules_file}" "${mod}"; then
+            echo "${mod}" >> "${modules_file}"
+            modules_changed=true
+            log_debug "Added ${mod} to ${modules_file}"
+        fi
+    done
+
+    if [[ "${modules_changed}" == "true" ]]; then
+        log_success "VFIO modules added to ${modules_file}"
+    else
+        log_debug "VFIO modules already in ${modules_file}"
+    fi
+
+    # In exclusive GPU mode, configure VFIO to claim the GPU at boot
+    if [[ "${GPU_MODE}" == "exclusive" && -n "${NVIDIA_GPU_PCI_ID:-}" ]]; then
+        log_info "Configuring exclusive GPU mode — VFIO will claim GPU at boot"
+
+        # Create modprobe config for VFIO PCI
+        if [[ ! -f "${modprobe_conf}" ]] || ! grep -q "${NVIDIA_GPU_PCI_ID}" "${modprobe_conf}" 2>/dev/null; then
+            cat > "${modprobe_conf}" << EOF
+# VFIO PCI configuration for GPU passthrough
+# Added by gpu-vm-bootstrap (exclusive mode)
+# GPU PCI ID: ${NVIDIA_GPU_PCI_ID}
+options vfio-pci ids=${NVIDIA_GPU_PCI_ID}
+softdep nvidia pre: vfio-pci
+EOF
+            log_success "VFIO PCI configuration created: ${modprobe_conf}"
+        else
+            log_debug "VFIO PCI configuration already contains GPU ID"
+        fi
+    elif [[ "${GPU_MODE}" == "flexible" ]]; then
+        log_info "Flexible GPU mode — VFIO bind/unbind managed by vmctl on demand"
+    fi
+
+    # Update initramfs to include VFIO modules
+    log_info "Updating initramfs..."
+    if ! update-initramfs -u >> "${LOG_FILE}" 2>&1; then
+        log_warn "update-initramfs failed — VFIO modules may not load at next boot"
+    else
+        log_success "initramfs updated"
+    fi
+
+    VFIO_REBOOT_REQUIRED=true
+    return 0
+}
+
+# Detect IOMMU groups for GPU isolation verification
+detect_iommu_groups() {
+    log_step "iommu" "Detecting IOMMU groups..."
+
+    local iommu_base="/sys/kernel/iommu_groups"
+
+    if [[ ! -d "${iommu_base}" ]] || [[ -z "$(ls -A "${iommu_base}" 2>/dev/null)" ]]; then
+        if [[ "${VFIO_REBOOT_REQUIRED:-false}" == "true" ]]; then
+            log_info "IOMMU groups not yet available — will be populated after reboot"
+        else
+            log_warn "No IOMMU groups found — IOMMU may not be enabled"
+            log_warn "Check BIOS/UEFI settings for VT-d (Intel) or AMD-Vi (AMD)"
+        fi
+        return 0
+    fi
+
+    # Count IOMMU groups
+    local group_count
+    group_count="$(find "${iommu_base}" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l)"
+    log_success "Found ${group_count} IOMMU group(s)"
+
+    # Find NVIDIA GPU IOMMU group if we know the PCI slot
+    if [[ -n "${NVIDIA_GPU_PCI_SLOT:-}" ]]; then
+        local gpu_iommu_group=""
+        local gpu_sysfs="/sys/bus/pci/devices/0000:${NVIDIA_GPU_PCI_SLOT}"
+
+        if [[ -L "${gpu_sysfs}/iommu_group" ]]; then
+            gpu_iommu_group="$(basename "$(readlink "${gpu_sysfs}/iommu_group")")"
+            log_info "NVIDIA GPU (${NVIDIA_GPU_PCI_SLOT}) in IOMMU group ${gpu_iommu_group}"
+
+            # List all devices in the same group
+            local group_dir="${iommu_base}/${gpu_iommu_group}/devices"
+            if [[ -d "${group_dir}" ]]; then
+                local device_count
+                device_count="$(find "${group_dir}" -maxdepth 1 -mindepth 1 2>/dev/null | wc -l)"
+                log_debug "IOMMU group ${gpu_iommu_group} contains ${device_count} device(s)"
+
+                if [[ "${device_count}" -gt 2 ]]; then
+                    log_warn "GPU IOMMU group contains ${device_count} devices"
+                    log_warn "For clean passthrough, the GPU should ideally be in its own group"
+                    log_info "Consider ACS override patch if grouping is too broad"
+                fi
+            fi
+        else
+            log_debug "GPU sysfs path not found or no IOMMU group link"
+        fi
+    fi
+
+    return 0
+}
+
+# Handle reboot requirement
+handle_vfio_reboot() {
+    if [[ "${VFIO_REBOOT_REQUIRED:-false}" != "true" ]]; then
+        return 0
+    fi
+
+    log_warn "A reboot is required to activate IOMMU and load VFIO modules"
+
+    if [[ "${REBOOT_ALLOWED}" == "true" ]]; then
+        log_info "Reboot will be performed at the end of the bootstrap"
+    else
+        log_info "Run 'sudo reboot' after bootstrap completes, or use --reboot flag"
+    fi
+
+    return 0
+}
+
+# Phase 3 orchestrator: IOMMU/VFIO configuration
+phase_vfio_setup() {
+    VFIO_REBOOT_REQUIRED=false
+
+    detect_cpu_vendor || return $?
+    configure_grub_iommu || return $?
+    configure_vfio_modules || return $?
+    detect_iommu_groups || return $?
+    handle_vfio_reboot
+
+    return 0
+}
+
+# =============================================================================
+# Phase Stubs (to be implemented in subsequent phases)
+# =============================================================================
 
 phase_bridge_setup() {
     log_info "Bridge network setup — not yet implemented"
