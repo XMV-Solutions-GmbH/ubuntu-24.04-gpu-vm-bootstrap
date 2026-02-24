@@ -20,12 +20,18 @@ teardown() {
 # =============================================================================
 
 @test "is_pkg_installed_installedPkg_returnsZero" {
-    # 'bash' should always be installed
+    # dpkg-query is only available on Debian/Ubuntu
+    if ! command -v dpkg-query &>/dev/null; then
+        skip "dpkg-query not available (not a Debian-based system)"
+    fi
     run is_pkg_installed "bash"
     [[ "$status" -eq 0 ]]
 }
 
 @test "is_pkg_installed_missingPkg_returnsNonZero" {
+    if ! command -v dpkg-query &>/dev/null; then
+        skip "dpkg-query not available (not a Debian-based system)"
+    fi
     run is_pkg_installed "this-package-definitely-does-not-exist-12345"
     [[ "$status" -ne 0 ]]
 }
@@ -126,11 +132,17 @@ EOF
 # =============================================================================
 
 @test "is_service_active_nonexistentService_returnsNonZero" {
+    if ! command -v systemctl &>/dev/null; then
+        skip "systemctl not available (not a systemd-based system)"
+    fi
     run is_service_active "nonexistent-service-xyz-12345"
     [[ "$status" -ne 0 ]]
 }
 
 @test "is_service_enabled_nonexistentService_returnsNonZero" {
+    if ! command -v systemctl &>/dev/null; then
+        skip "systemctl not available (not a systemd-based system)"
+    fi
     run is_service_enabled "nonexistent-service-xyz-12345"
     [[ "$status" -ne 0 ]]
 }
