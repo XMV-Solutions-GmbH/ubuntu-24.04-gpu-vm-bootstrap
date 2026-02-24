@@ -521,13 +521,297 @@ run_phase() {
 }
 
 # =============================================================================
-# Phase Stubs (to be implemented in subsequent phases)
+# Phase 1: NVIDIA Driver & CUDA Setup
 # =============================================================================
 
-phase_nvidia_setup() {
-    log_info "NVIDIA driver and CUDA setup — not yet implemented"
+# Detect NVIDIA GPU hardware via lspci
+detect_nvidia_gpu() {
+    log_step "gpu" "Detecting NVIDIA GPU hardware..."
+
+    if ! is_command_available lspci; then
+        log_info "Installing pciutils for GPU detection..."
+        if [[ "${DRY_RUN}" == "true" ]]; then
+            log_dry_run "Would install pciutils"
+        else
+            ensure_pkg_installed pciutils
+        fi
+    fi
+
+    local gpu_info
+    gpu_info="$(lspci -nn 2>/dev/null | grep -i 'nvidia' || true)"
+
+    if [[ -z "${gpu_info}" ]]; then
+        log_error "No NVIDIA GPU detected"
+        log_error "This script requires an NVIDIA GPU for driver installation"
+        return "${EXIT_MISSING_DEPS}"
+    fi
+
+    # Extract PCI IDs (vendor:device) for all NVIDIA devices
+    local gpu_count
+    gpu_count="$(echo "${gpu_info}" | wc -l)"
+
+    log_success "Detected ${gpu_count} NVIDIA device(s):"
+    while IFS= read -r line; do
+        log_info "  ${line}"
+    done <<< "${gpu_info}"
+
+    # Extract the PCI slot address of the first GPU (for VFIO later)
+    NVIDIA_GPU_PCI_SLOT="$(echo "${gpu_info}" | head -1 | awk '{print $1}')"
+    export NVIDIA_GPU_PCI_SLOT
+
+    # Extract vendor:device ID pair (e.g. 10de:20f1)
+    NVIDIA_GPU_PCI_ID="$(echo "${gpu_info}" | head -1 | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}\]' | head -1 | tr -d '[]' || true)"
+    export NVIDIA_GPU_PCI_ID
+
+    log_debug "GPU PCI slot: ${NVIDIA_GPU_PCI_SLOT}"
+    log_debug "GPU PCI ID: ${NVIDIA_GPU_PCI_ID:-unknown}"
+
+    return "${EXIT_SUCCESS}"
+}
+
+# Add the official NVIDIA CUDA repository
+add_nvidia_repository() {
+    log_step "repo" "Configuring NVIDIA CUDA repository..."
+
+    local keyring_path="/usr/share/keyrings/cuda-archive-keyring.gpg"
+    local sources_list="/etc/apt/sources.list.d/cuda-ubuntu2404-x86_64.list"
+    local pin_file="/etc/apt/preferences.d/cuda-repository-pin-600"
+
+    # Check if repository is already configured
+    if [[ -f "${keyring_path}" && -f "${sources_list}" ]]; then
+        log_debug "NVIDIA CUDA repository already configured"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would add NVIDIA CUDA repository"
+        log_dry_run "Would download keyring to ${keyring_path}"
+        log_dry_run "Would configure apt sources"
+        return 0
+    fi
+
+    # Download and install the CUDA keyring package
+    local keyring_deb="cuda-keyring_1.1-1_all.deb"
+    local keyring_url="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/${keyring_deb}"
+
+    log_info "Downloading NVIDIA CUDA keyring..."
+    local tmp_deb
+    tmp_deb="$(mktemp /tmp/cuda-keyring-XXXXXX.deb)"
+
+    if ! curl -fsSL "${keyring_url}" -o "${tmp_deb}"; then
+        log_error "Failed to download NVIDIA CUDA keyring from ${keyring_url}"
+        rm -f "${tmp_deb}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Installing NVIDIA CUDA keyring..."
+    if ! dpkg -i "${tmp_deb}" >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install NVIDIA CUDA keyring"
+        rm -f "${tmp_deb}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    rm -f "${tmp_deb}"
+
+    # Update package lists with new repository
+    log_info "Updating package lists..."
+    apt-get update -qq >> "${LOG_FILE}" 2>&1
+
+    log_success "NVIDIA CUDA repository configured"
     return 0
 }
+
+# Install NVIDIA drivers from the official repository
+install_nvidia_drivers() {
+    log_step "driver" "Installing NVIDIA drivers..."
+
+    # Check if NVIDIA driver is already installed and functional
+    if is_command_available nvidia-smi; then
+        local existing_version
+        existing_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)"
+        if [[ -n "${existing_version}" ]]; then
+            log_success "NVIDIA driver already installed (v${existing_version})"
+            return 0
+        fi
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install NVIDIA driver package (cuda-drivers)"
+        return 0
+    fi
+
+    # Install the NVIDIA driver meta-package
+    # cuda-drivers pulls the latest compatible driver for the GPU
+    log_info "Installing NVIDIA drivers (this may take several minutes)..."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cuda-drivers >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install NVIDIA drivers"
+        log_error "Check ${LOG_FILE} for details"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "NVIDIA drivers installed"
+    return 0
+}
+
+# Install the CUDA toolkit
+install_cuda_toolkit() {
+    log_step "cuda" "Installing CUDA toolkit..."
+
+    # Check if CUDA is already installed
+    if is_command_available nvcc; then
+        local cuda_version
+        cuda_version="$(nvcc --version 2>/dev/null | grep -oP 'release \K[0-9]+\.[0-9]+' || true)"
+        if [[ -n "${cuda_version}" ]]; then
+            log_success "CUDA toolkit already installed (v${cuda_version})"
+            return 0
+        fi
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install CUDA toolkit (cuda-toolkit)"
+        return 0
+    fi
+
+    log_info "Installing CUDA toolkit (this may take several minutes)..."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cuda-toolkit >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install CUDA toolkit"
+        log_error "Check ${LOG_FILE} for details"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    # Add CUDA to PATH if not already present
+    local cuda_profile="/etc/profile.d/cuda.sh"
+    if [[ ! -f "${cuda_profile}" ]]; then
+        log_info "Configuring CUDA environment variables..."
+        cat > "${cuda_profile}" << 'CUDA_ENV'
+# CUDA toolkit environment configuration
+# Added by gpu-vm-bootstrap
+if [ -d /usr/local/cuda/bin ]; then
+    export PATH="/usr/local/cuda/bin${PATH:+:${PATH}}"
+fi
+if [ -d /usr/local/cuda/lib64 ]; then
+    export LD_LIBRARY_PATH="/usr/local/cuda/lib64${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+fi
+CUDA_ENV
+        chmod 644 "${cuda_profile}"
+        log_debug "Created ${cuda_profile}"
+    fi
+
+    log_success "CUDA toolkit installed"
+    return 0
+}
+
+# Install nvidia-container-toolkit for containerised GPU workloads
+install_nvidia_container_toolkit() {
+    log_step "container" "Installing nvidia-container-toolkit..."
+
+    # Check if already installed
+    if is_command_available nvidia-ctk; then
+        log_success "nvidia-container-toolkit already installed"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would add NVIDIA container toolkit repository"
+        log_dry_run "Would install nvidia-container-toolkit"
+        return 0
+    fi
+
+    local nct_keyring="/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg"
+    local nct_sources="/etc/apt/sources.list.d/nvidia-container-toolkit.list"
+
+    # Add the NVIDIA container toolkit repository if not present
+    if [[ ! -f "${nct_keyring}" || ! -f "${nct_sources}" ]]; then
+        log_info "Adding NVIDIA container toolkit repository..."
+
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+            | gpg --dearmor -o "${nct_keyring}" 2>/dev/null
+
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+            | sed "s#deb https://#deb [signed-by=${nct_keyring}] https://#g" \
+            > "${nct_sources}"
+
+        apt-get update -qq >> "${LOG_FILE}" 2>&1
+    fi
+
+    log_info "Installing nvidia-container-toolkit..."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nvidia-container-toolkit >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install nvidia-container-toolkit"
+        log_error "Check ${LOG_FILE} for details"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "nvidia-container-toolkit installed"
+    return 0
+}
+
+# Verify that the NVIDIA setup is functional
+verify_nvidia_setup() {
+    log_step "verify" "Verifying NVIDIA setup..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would verify NVIDIA setup via nvidia-smi"
+        return 0
+    fi
+
+    # Verify nvidia-smi is available and responds
+    if ! is_command_available nvidia-smi; then
+        log_warn "nvidia-smi not found in PATH"
+        log_warn "A reboot may be required to load the NVIDIA kernel modules"
+        NVIDIA_REBOOT_REQUIRED=true
+        export NVIDIA_REBOOT_REQUIRED
+        return 0
+    fi
+
+    if nvidia-smi &>/dev/null; then
+        log_success "nvidia-smi reports healthy GPU status"
+
+        # Log GPU details
+        local gpu_name
+        gpu_name="$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1 || true)"
+        local driver_version
+        driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -1 || true)"
+        local cuda_version
+        cuda_version="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 || true)"
+
+        log_info "GPU: ${gpu_name:-unknown}"
+        log_info "Driver: ${driver_version:-unknown}"
+        log_info "Compute capability: ${cuda_version:-unknown}"
+    else
+        log_warn "nvidia-smi failed — a reboot may be required to load NVIDIA kernel modules"
+        NVIDIA_REBOOT_REQUIRED=true
+        export NVIDIA_REBOOT_REQUIRED
+    fi
+
+    return 0
+}
+
+# Phase 1 orchestrator: NVIDIA driver & CUDA setup
+phase_nvidia_setup() {
+    NVIDIA_REBOOT_REQUIRED=false
+
+    detect_nvidia_gpu || return $?
+    add_nvidia_repository || return $?
+    install_nvidia_drivers || return $?
+    install_cuda_toolkit || return $?
+    install_nvidia_container_toolkit || return $?
+    verify_nvidia_setup || return $?
+
+    if [[ "${NVIDIA_REBOOT_REQUIRED}" == "true" ]]; then
+        log_warn "A reboot is required to complete NVIDIA setup"
+        if [[ "${REBOOT_ALLOWED}" == "true" ]]; then
+            log_info "Reboot will be performed at the end of the bootstrap"
+        else
+            log_info "Run 'sudo reboot' after bootstrap completes, or use --reboot flag"
+        fi
+    fi
+
+    return 0
+}
+
+# =============================================================================
+# Phase Stubs (to be implemented in subsequent phases)
+# =============================================================================
 
 phase_kvm_setup() {
     log_info "KVM/libvirt setup — not yet implemented"

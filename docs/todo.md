@@ -45,11 +45,11 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Detect GPU hardware                              | `lspci` parsing, compute capability check       |
-| ⚪     | Install NVIDIA drivers                           | Official NVIDIA repo, latest stable             |
-| ⚪     | Install CUDA toolkit                             | CUDA libraries for PyTorch                      |
-| ⚪     | Install nvidia-container-toolkit                 | For containerised GPU workloads                 |
-| ⚪     | Verify NVIDIA setup                              | `nvidia-smi` health check                       |
+| 🟢     | Detect GPU hardware                              | `lspci` parsing, PCI slot/ID extraction         |
+| 🟢     | Install NVIDIA drivers                           | Official NVIDIA CUDA repo, `cuda-drivers`       |
+| 🟢     | Install CUDA toolkit                             | `cuda-toolkit`, PATH configuration              |
+| 🟢     | Install nvidia-container-toolkit                 | For containerised GPU workloads                 |
+| 🟢     | Verify NVIDIA setup                              | `nvidia-smi` health check, reboot detection     |
 
 #### Phase 3: Bootstrap Script — KVM/libvirt Setup
 
