@@ -14,9 +14,12 @@ set -euo pipefail
 # =============================================================================
 
 readonly VMCTL_NAME="vmctl"
-readonly VMCTL_VERSION="0.1.0-dev"
+readonly VMCTL_VERSION="0.2.0-dev"
 readonly VMCTL_CONFIG_DIR="${VMCTL_CONFIG_DIR:-/etc/vmctl}"
+readonly VMCTL_IMAGE_DIR="${VMCTL_IMAGE_DIR:-${VMCTL_CONFIG_DIR}/images}"
 readonly VMCTL_MANAGED_TAG="managed-by-vmctl"
+readonly TALOS_IMAGE_FACTORY_URL="https://factory.talos.dev"
+readonly TALOS_GITHUB_API="https://api.github.com/repos/siderolabs/talos/releases/latest"
 
 # Exit codes
 readonly EXIT_SUCCESS=0
@@ -119,6 +122,156 @@ _vm_ip() {
 
     echo "—"
     return 0
+}
+
+# =============================================================================
+# GPU Helpers
+# =============================================================================
+
+# Detect NVIDIA GPU PCI addresses (VGA + audio function)
+_gpu_pci_slots() {
+    lspci -nn 2>/dev/null \
+        | grep -i 'nvidia' \
+        | awk '{print $1}'
+}
+
+# Get the PCI vendor:device ID for a slot (e.g. "10de:27b0")
+_gpu_vendor_device() {
+    local slot="$1"
+    lspci -n -s "${slot}" 2>/dev/null | awk '{print $3}'
+}
+
+# Get the current kernel driver for a PCI slot
+_gpu_current_driver() {
+    local slot="$1"
+    local driver_link="/sys/bus/pci/devices/0000:${slot}/driver"
+    if [[ -L "${driver_link}" ]]; then
+        basename "$(readlink "${driver_link}")"
+    else
+        echo "none"
+    fi
+}
+
+# Get the IOMMU group number for a PCI slot
+_gpu_iommu_group() {
+    local slot="$1"
+    local group_link="/sys/bus/pci/devices/0000:${slot}/iommu_group"
+    if [[ -L "${group_link}" ]]; then
+        basename "$(readlink "${group_link}")"
+    else
+        echo "—"
+    fi
+}
+
+# Unbind a PCI device from its current driver
+_pci_unbind() {
+    local slot="$1"
+    local sysfs_path="/sys/bus/pci/devices/0000:${slot}"
+    local driver_path="${sysfs_path}/driver"
+
+    if [[ -L "${driver_path}" ]]; then
+        echo "0000:${slot}" > "${driver_path}/unbind" 2>/dev/null || true
+    fi
+}
+
+# Bind a PCI device to a specific driver
+_pci_bind() {
+    local slot="$1"
+    local driver="$2"
+    local sysfs_driver="/sys/bus/pci/drivers/${driver}"
+
+    # Set driver override
+    echo "${driver}" > "/sys/bus/pci/devices/0000:${slot}/driver_override" 2>/dev/null
+
+    # Trigger binding
+    echo "0000:${slot}" > "${sysfs_driver}/bind" 2>/dev/null || true
+
+    # Clear override
+    echo "" > "/sys/bus/pci/devices/0000:${slot}/driver_override" 2>/dev/null || true
+}
+
+# =============================================================================
+# Networking Helpers
+# =============================================================================
+
+# Detect if the host is in /32 direct-route mode
+_is_direct_route_mode() {
+    ip route show default 2>/dev/null | grep -q 'onlink'
+}
+
+# Get the host's default gateway
+_host_gateway() {
+    ip route show default 2>/dev/null \
+        | sed -n 's/.*via \([0-9.]*\).*/\1/p' \
+        | head -n1
+}
+
+# Get the bridge interface name (br0 or first bridge found)
+_bridge_name() {
+    local br=""
+    br="$(ip -o link show type bridge 2>/dev/null \
+        | awk -F': ' '{print $2}' | head -n1)"
+    echo "${br:-br0}"
+}
+
+# Get the bridge IP address with prefix
+_bridge_ip() {
+    local br
+    br="$(_bridge_name)"
+    ip -4 addr show "${br}" 2>/dev/null \
+        | awk '/inet / {print $2; exit}'
+}
+
+# =============================================================================
+# Smart Defaults
+# =============================================================================
+
+# Auto-detect number of vCPUs (50% of host, min 2)
+_auto_cpus() {
+    local total
+    total="$(nproc 2>/dev/null)" || total=4
+    local half=$(( total / 2 ))
+    if [[ ${half} -lt 2 ]]; then half=2; fi
+    echo "${half}"
+}
+
+# Auto-detect memory in MiB (50% of host, min 2048)
+_auto_memory() {
+    local total_mb
+    total_mb="$(free -m 2>/dev/null | awk '/Mem:/ {print $2}')" || total_mb=8192
+    local half=$(( total_mb / 2 ))
+    if [[ ${half} -lt 2048 ]]; then half=2048; fi
+    echo "${half}"
+}
+
+# Auto-increment VM name: talos-01, talos-02, ...
+_auto_name() {
+    local prefix="$1"
+    local n=1
+    while true; do
+        local name
+        name="$(printf '%s-%02d' "${prefix}" "${n}")"
+        if ! virsh dominfo "${name}" &>/dev/null; then
+            echo "${name}"
+            return 0
+        fi
+        n=$(( n + 1 ))
+        if [[ ${n} -gt 99 ]]; then
+            echo "${prefix}-$(date +%s)"
+            return 0
+        fi
+    done
+}
+
+# Check if a VFIO-ready GPU is available (bound to nvidia or vfio-pci)
+_has_gpu() {
+    lspci -nn 2>/dev/null | grep -i 'nvidia' | grep -qi '\[03'
+}
+
+# Generate a random MAC address with KVM prefix 52:54:00
+_random_mac() {
+    printf '52:54:00:%02x:%02x:%02x\n' \
+        $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256))
 }
 
 # =============================================================================
@@ -407,7 +560,7 @@ vmctl — GPU VM management CLI
 Usage:
   vmctl <command> [arguments]
 
-Commands:
+Lifecycle Commands:
   list                List all VMs with state, IP, resources
   info   <name>       Show detailed VM information
   start  <name>       Start a stopped VM
@@ -415,24 +568,41 @@ Commands:
   delete <name>       Delete a VM and its storage
   ssh    <name>       SSH into a VM (Ubuntu VMs only)
 
-  gpu    status       Show GPU binding state
-  gpu    attach <vm>  Attach GPU to VM via VFIO
-  gpu    detach <vm>  Detach GPU from VM, rebind to host
+GPU Commands:
+  gpu    status       Show GPU binding state and IOMMU groups
+  gpu    attach <vm>  Unbind GPU from host, bind vfio-pci, attach to VM
+  gpu    detach <vm>  Detach GPU from VM, rebind to host nvidia driver
 
-  ip     check        Scan bridge subnet for free IPs
+Networking Commands:
+  ip     check        Scan bridge subnet for free IPs (standard mode)
   ip     list         Show IPs assigned to managed VMs
 
-  create talos  ...   Create a Talos Linux VM (coming soon)
-  create ubuntu ...   Create an Ubuntu Desktop VM (coming soon)
+Create Commands:
+  create talos  [opts]   Create a Talos Linux VM with GPU support
+  create ubuntu [opts]   Create an Ubuntu Desktop VM
 
+  Options for create:
+    --name <n>           VM name (auto-generated if omitted)
+    --cpus <n>           vCPU count (default: 50% of host)
+    --memory <n>         Memory in MiB (default: 50% of host)
+    --disk <n>           Disk size in GiB (default: 50)
+    --no-gpu             Skip GPU passthrough
+    --ip <addr>          Static IP (required in /32 mode)
+    --mac <addr>         MAC address (required in /32 mode)
+    --gateway <addr>     Gateway (auto-detected)
+    --talos-version <v>  Talos version (default: latest)
+
+Other:
   version             Show version
   help                Show this help
 
 Examples:
   vmctl list
-  vmctl start my-vm
-  vmctl ssh my-vm
   vmctl gpu status
+  vmctl create talos
+  vmctl create talos --name k8s-gpu-01 --cpus 8 --memory 16384
+  vmctl create talos --ip 1.2.3.4 --mac 52:54:00:aa:bb:cc
+  vmctl create ubuntu --no-gpu --disk 100
 EOF
 }
 
@@ -440,13 +610,234 @@ show_version() {
     echo "${VMCTL_NAME} v${VMCTL_VERSION}"
 }
 
-# Stub subcommands (to be implemented in later phases)
+# =============================================================================
+# Subcommand: gpu
+# =============================================================================
+
+# vmctl gpu status — show GPU PCI slot, vendor:device, driver, IOMMU group
+cmd_gpu_status() {
+    log_info "GPU status:"
+    echo ""
+
+    local slots=""
+    slots="$(_gpu_pci_slots)" || true
+
+    if [[ -z "${slots}" ]]; then
+        log_warn "No NVIDIA GPUs found"
+        return 0
+    fi
+
+    printf '  %b%-10s %-14s %-18s %-8s%b\n' \
+        "${CLR_BOLD}" "SLOT" "VENDOR:DEV" "DRIVER" "IOMMU" "${CLR_RESET}"
+    printf '  %-10s %-14s %-18s %-8s\n' \
+        "──────────" "──────────────" "──────────────────" "────────"
+
+    while IFS= read -r slot; do
+        local vd driver iommu
+        vd="$(_gpu_vendor_device "${slot}")"
+        driver="$(_gpu_current_driver "${slot}")"
+        iommu="$(_gpu_iommu_group "${slot}")"
+
+        local driver_colour="${CLR_RESET}"
+        case "${driver}" in
+            nvidia*)  driver_colour="${CLR_GREEN}" ;;
+            vfio-pci) driver_colour="${CLR_YELLOW}" ;;
+            none)     driver_colour="${CLR_DIM}" ;;
+        esac
+
+        printf '  %-10s %-14s %b%-18s%b %-8s\n' \
+            "${slot}" "${vd}" "${driver_colour}" "${driver}" "${CLR_RESET}" "${iommu}"
+    done <<< "${slots}"
+
+    echo ""
+}
+
+# vmctl gpu attach <vm> — unbind GPU from host, bind to vfio-pci, attach to VM
+cmd_gpu_attach() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl gpu attach <vm-name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    # Find the VGA GPU slot (function 0)
+    local gpu_slot=""
+    gpu_slot="$(lspci -nn 2>/dev/null \
+        | grep -i 'nvidia.*\[03' \
+        | awk '{print $1}' | head -n1)"
+
+    if [[ -z "${gpu_slot}" ]]; then
+        log_error "No NVIDIA VGA GPU found"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    local current_driver
+    current_driver="$(_gpu_current_driver "${gpu_slot}")"
+    if [[ "${current_driver}" == "vfio-pci" ]]; then
+        log_info "GPU ${gpu_slot} already bound to vfio-pci"
+    else
+        log_info "Unbinding GPU ${gpu_slot} from ${current_driver}..."
+        _pci_unbind "${gpu_slot}"
+        sleep 1
+        log_info "Binding GPU ${gpu_slot} to vfio-pci..."
+        _pci_bind "${gpu_slot}" "vfio-pci"
+    fi
+
+    # Also handle the audio function (usually .1)
+    local audio_slot="${gpu_slot%.*}.1"
+    if [[ -d "/sys/bus/pci/devices/0000:${audio_slot}" ]]; then
+        local audio_driver
+        audio_driver="$(_gpu_current_driver "${audio_slot}")"
+        if [[ "${audio_driver}" != "vfio-pci" ]]; then
+            log_info "Unbinding audio ${audio_slot} from ${audio_driver}..."
+            _pci_unbind "${audio_slot}"
+            sleep 1
+            _pci_bind "${audio_slot}" "vfio-pci"
+        fi
+    fi
+
+    # Build PCI hostdev XML and attach
+    # Convert slot notation: 01:00.0 → bus=0x01, slot=0x00, function=0x0
+    local bus slot_num func
+    bus="0x${gpu_slot%%:*}"
+    local rest="${gpu_slot#*:}"
+    slot_num="0x${rest%%.*}"
+    func="0x${rest#*.}"
+
+    local hostdev_xml
+    hostdev_xml="$(mktemp /tmp/vmctl-hostdev-XXXXXX.xml)"
+    cat > "${hostdev_xml}" << EOF
+<hostdev mode='subsystem' type='pci' managed='yes'>
+  <source>
+    <address domain='0x0000' bus='${bus}' slot='${slot_num}' function='${func}'/>
+  </source>
+</hostdev>
+EOF
+
+    local state
+    state="$(_vm_state "${name}")"
+    if [[ "${state}" == "running" ]]; then
+        log_info "Hot-attaching GPU to running VM '${name}'..."
+        if virsh attach-device "${name}" "${hostdev_xml}" --live --config 2>/dev/null; then
+            log_success "GPU attached to '${name}' (live + config)"
+        else
+            log_error "Failed to attach GPU to '${name}'"
+            rm -f "${hostdev_xml}"
+            return "${EXIT_GENERAL_ERROR}"
+        fi
+    else
+        log_info "Attaching GPU to stopped VM '${name}' (config only)..."
+        if virsh attach-device "${name}" "${hostdev_xml}" --config 2>/dev/null; then
+            log_success "GPU attached to '${name}' (will apply on next start)"
+        else
+            log_error "Failed to attach GPU to '${name}'"
+            rm -f "${hostdev_xml}"
+            return "${EXIT_GENERAL_ERROR}"
+        fi
+    fi
+
+    rm -f "${hostdev_xml}"
+}
+
+# vmctl gpu detach <vm> — detach GPU from VM, rebind to host nvidia driver
+cmd_gpu_detach() {
+    local name="${1:-}"
+    if [[ -z "${name}" ]]; then
+        log_error "Usage: vmctl gpu detach <vm-name>"
+        return "${EXIT_INVALID_ARGS}"
+    fi
+
+    _require_command virsh libvirt-clients || return $?
+
+    if ! _vm_exists "${name}"; then
+        log_error "VM '${name}' not found"
+        return "${EXIT_VM_NOT_FOUND}"
+    fi
+
+    # Find GPU PCI address in the VM's XML
+    local gpu_bus gpu_slot_num gpu_func
+    local pci_line=""
+    pci_line="$(virsh dumpxml "${name}" 2>/dev/null \
+        | grep -A5 '<hostdev.*pci' \
+        | grep '<address.*bus' \
+        | head -n1)" || true
+
+    if [[ -z "${pci_line}" ]]; then
+        log_info "No PCI devices attached to VM '${name}'"
+        return 0
+    fi
+
+    # shellcheck disable=SC2001
+    gpu_bus="$(echo "${pci_line}" | sed "s/.*bus='\([^']*\)'.*/\1/")"
+    # shellcheck disable=SC2001
+    gpu_slot_num="$(echo "${pci_line}" | sed "s/.*slot='\([^']*\)'.*/\1/")"
+    # shellcheck disable=SC2001
+    gpu_func="$(echo "${pci_line}" | sed "s/.*function='\([^']*\)'.*/\1/")"
+
+    # Build the hostdev XML for detachment
+    local hostdev_xml
+    hostdev_xml="$(mktemp /tmp/vmctl-hostdev-XXXXXX.xml)"
+    cat > "${hostdev_xml}" << EOF
+<hostdev mode='subsystem' type='pci' managed='yes'>
+  <source>
+    <address domain='0x0000' bus='${gpu_bus}' slot='${gpu_slot_num}' function='${gpu_func}'/>
+  </source>
+</hostdev>
+EOF
+
+    local state
+    state="$(_vm_state "${name}")"
+    if [[ "${state}" == "running" ]]; then
+        log_info "Hot-detaching GPU from running VM '${name}'..."
+        if virsh detach-device "${name}" "${hostdev_xml}" --live --config 2>/dev/null; then
+            log_success "GPU detached from '${name}'"
+        else
+            log_error "Failed to detach GPU from '${name}'"
+            rm -f "${hostdev_xml}"
+            return "${EXIT_GENERAL_ERROR}"
+        fi
+    else
+        log_info "Removing GPU from stopped VM '${name}' (config only)..."
+        if virsh detach-device "${name}" "${hostdev_xml}" --config 2>/dev/null; then
+            log_success "GPU removed from '${name}' config"
+        else
+            log_error "Failed to detach GPU from '${name}'"
+            rm -f "${hostdev_xml}"
+            return "${EXIT_GENERAL_ERROR}"
+        fi
+    fi
+
+    rm -f "${hostdev_xml}"
+
+    # Rebind GPU to nvidia driver
+    local slot_decimal
+    # Convert 0x01 → 01 for PCI slot notation
+    local slot_plain="${gpu_bus#0x}:${gpu_slot_num#0x}.${gpu_func#0x}"
+    local current_driver
+    current_driver="$(_gpu_current_driver "${slot_plain}")"
+    if [[ "${current_driver}" == "vfio-pci" ]]; then
+        log_info "Rebinding GPU ${slot_plain} to nvidia driver..."
+        _pci_unbind "${slot_plain}"
+        sleep 1
+        _pci_bind "${slot_plain}" "nvidia"
+        log_success "GPU rebound to nvidia driver"
+    fi
+}
+
 cmd_gpu() {
     local subcmd="${1:-}"
+    shift 2>/dev/null || true
     case "${subcmd}" in
-        status|attach|detach)
-            log_info "vmctl gpu ${subcmd} — not yet implemented"
-            ;;
+        status)  cmd_gpu_status "$@" ;;
+        attach)  cmd_gpu_attach "$@" ;;
+        detach)  cmd_gpu_detach "$@" ;;
         *)
             log_error "Usage: vmctl gpu {status|attach|detach} [name]"
             return "${EXIT_INVALID_ARGS}"
@@ -454,12 +845,80 @@ cmd_gpu() {
     esac
 }
 
+# =============================================================================
+# Subcommand: ip
+# =============================================================================
+
+# vmctl ip list — show IPs assigned to all VMs
+cmd_ip_list() {
+    _require_command virsh libvirt-clients || return $?
+
+    printf '%b%-20s %-16s%b\n' \
+        "${CLR_BOLD}" "VM" "IP" "${CLR_RESET}"
+    printf '%-20s %-16s\n' \
+        "────────────────────" "────────────────"
+
+    local domains=""
+    domains="$(virsh list --all --name 2>/dev/null | grep -v '^$')" || true
+
+    if [[ -z "${domains}" ]]; then
+        log_info "No VMs found"
+        return 0
+    fi
+
+    while IFS= read -r name; do
+        local ip="—"
+        local state
+        state="$(_vm_state "${name}")"
+        if [[ "${state}" == "running" ]]; then
+            ip="$(_vm_ip "${name}")"
+        fi
+        printf '%-20s %-16s\n' "${name}" "${ip}"
+    done <<< "${domains}"
+}
+
+# vmctl ip check — scan bridge subnet for free IPs (standard mode only)
+cmd_ip_check() {
+    if _is_direct_route_mode; then
+        log_warn "/32 direct-route mode detected"
+        log_info "Free IP scanning is not available in this mode"
+        log_info "Order additional IPs from your hosting provider and use --ip"
+        return 0
+    fi
+
+    local bridge_ip
+    bridge_ip="$(_bridge_ip)"
+    if [[ -z "${bridge_ip}" ]]; then
+        log_error "No bridge interface found with an IP address"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    local subnet="${bridge_ip}"
+    log_info "Scanning subnet ${subnet} for free IPs..."
+
+    if command -v nmap &>/dev/null; then
+        # Use nmap for ARP scan
+        local used_ips
+        used_ips="$(nmap -sn "${subnet}" 2>/dev/null \
+            | grep 'Nmap scan report' \
+            | awk '{print $NF}' | tr -d '()')"
+        log_info "Addresses in use:"
+        echo "${used_ips}" | while IFS= read -r addr; do
+            printf '  %s\n' "${addr}"
+        done
+    else
+        log_warn "nmap not installed — install with: apt install nmap"
+        log_info "Listing known VM IPs instead:"
+        cmd_ip_list
+    fi
+}
+
 cmd_ip() {
     local subcmd="${1:-}"
+    shift 2>/dev/null || true
     case "${subcmd}" in
-        check|list)
-            log_info "vmctl ip ${subcmd} — not yet implemented"
-            ;;
+        check) cmd_ip_check "$@" ;;
+        list)  cmd_ip_list "$@" ;;
         *)
             log_error "Usage: vmctl ip {check|list}"
             return "${EXIT_INVALID_ARGS}"
@@ -467,12 +926,531 @@ cmd_ip() {
     esac
 }
 
+# =============================================================================
+# Talos Image Factory
+# =============================================================================
+
+# Fetch the latest stable Talos version from GitHub
+_fetch_talos_version() {
+    local cache_file="${VMCTL_IMAGE_DIR}/talos-latest-version"
+
+    # Use cache if less than 1 hour old
+    if [[ -f "${cache_file}" ]]; then
+        local age
+        age=$(( $(date +%s) - $(stat -c %Y "${cache_file}" 2>/dev/null || echo 0) ))
+        if [[ ${age} -lt 3600 ]]; then
+            cat "${cache_file}"
+            return 0
+        fi
+    fi
+
+    _require_command curl || return $?
+
+    local version=""
+    version="$(curl -fsSL "${TALOS_GITHUB_API}" 2>/dev/null \
+        | grep '"tag_name"' \
+        | head -n1 \
+        | sed 's/.*"tag_name": *"\([^"]*\)".*/\1/')" || true
+
+    if [[ -z "${version}" ]]; then
+        log_error "Failed to fetch latest Talos version from GitHub"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    mkdir -p "${VMCTL_IMAGE_DIR}"
+    echo "${version}" > "${cache_file}"
+    echo "${version}"
+}
+
+# Detect GPU architecture and choose the correct NVIDIA extension
+# Turing+ (compute >= 7.5): nvidia-open-gpu-kernel-modules
+# Older (Maxwell, Pascal, Volta): nonfree-kmod-nvidia
+_nvidia_extension_name() {
+    # Check the GPU device ID from lspci
+    local device_id=""
+    device_id="$(lspci -nn 2>/dev/null \
+        | grep -i 'nvidia' \
+        | grep '\[03' \
+        | head -n1 \
+        | grep -oP '\[10de:\K[0-9a-f]+' \
+        )" || true
+
+    if [[ -z "${device_id}" ]]; then
+        # Default to open driver if we cannot detect
+        echo "nvidia-open-gpu-kernel-modules"
+        return 0
+    fi
+
+    # Device IDs for Turing+ architectures (20xx, 30xx, 40xx, A-series, etc.)
+    # Turing: 1e00-1fff, 2100-21ff
+    # Ampere: 2200-25ff
+    # Ada Lovelace: 2600-27ff
+    # Hopper: 2300-23ff
+    # All of these support the open kernel modules
+    local id_decimal
+    id_decimal="$((16#${device_id}))"
+
+    # Maxwell (1380-13ff) and Pascal (1500-1dff) and Volta (1d00-1d8f)
+    # use the proprietary driver
+    if [[ ${id_decimal} -lt $((16#1e00)) ]]; then
+        echo "nonfree-kmod-nvidia"
+    else
+        echo "nvidia-open-gpu-kernel-modules"
+    fi
+}
+
+# Build and POST the schematic to Image Factory, return schematic ID
+_get_talos_schematic_id() {
+    local nvidia_ext
+    nvidia_ext="$(_nvidia_extension_name)"
+    log_info "Using NVIDIA extension: ${nvidia_ext}"
+
+    local cache_file="${VMCTL_IMAGE_DIR}/schematic-${nvidia_ext}.id"
+
+    if [[ -f "${cache_file}" ]]; then
+        cat "${cache_file}"
+        return 0
+    fi
+
+    _require_command curl || return $?
+    _require_command jq || return $?
+
+    local schematic_json
+    schematic_json="$(cat << EOF
+{
+  "customization": {
+    "systemExtensions": {
+      "officialExtensions": [
+        "siderolabs/${nvidia_ext}",
+        "siderolabs/nvidia-container-toolkit"
+      ]
+    }
+  }
+}
+EOF
+)"
+
+    log_info "Posting schematic to Talos Image Factory..."
+    local response=""
+    response="$(curl -fsSL -X POST \
+        -H 'Content-Type: application/json' \
+        -d "${schematic_json}" \
+        "${TALOS_IMAGE_FACTORY_URL}/schematics" 2>/dev/null)" || {
+        log_error "Failed to POST schematic to Image Factory"
+        return "${EXIT_GENERAL_ERROR}"
+    }
+
+    local schematic_id=""
+    schematic_id="$(echo "${response}" | jq -r '.id // empty' 2>/dev/null)" || true
+
+    if [[ -z "${schematic_id}" ]]; then
+        log_error "No schematic ID returned from Image Factory"
+        log_error "Response: ${response}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    mkdir -p "${VMCTL_IMAGE_DIR}"
+    echo "${schematic_id}" > "${cache_file}"
+    log_success "Schematic ID: ${schematic_id}"
+    echo "${schematic_id}"
+}
+
+# Download a Talos image from Image Factory (cached)
+_download_talos_image() {
+    local version="$1"
+    local schematic_id="$2"
+    local image_file="${VMCTL_IMAGE_DIR}/talos-${version}-${schematic_id:0:12}.raw"
+
+    if [[ -f "${image_file}" ]]; then
+        log_info "Using cached Talos image: ${image_file}"
+        echo "${image_file}"
+        return 0
+    fi
+
+    _require_command curl || return $?
+    _require_command xz xz-utils || return $?
+
+    local url="${TALOS_IMAGE_FACTORY_URL}/image/${schematic_id}/${version}/nocloud-amd64.raw.xz"
+    local xz_file="${image_file}.xz"
+
+    mkdir -p "${VMCTL_IMAGE_DIR}"
+    log_info "Downloading Talos ${version} image..."
+    log_info "URL: ${url}"
+
+    if ! curl -fSL -o "${xz_file}" "${url}" 2>&1; then
+        log_error "Failed to download Talos image"
+        rm -f "${xz_file}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Decompressing image..."
+    if ! xz -d "${xz_file}" 2>/dev/null; then
+        log_error "Failed to decompress Talos image"
+        rm -f "${xz_file}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Talos image ready: ${image_file}"
+    echo "${image_file}"
+}
+
+# =============================================================================
+# Subcommand: create
+# =============================================================================
+
+# Parse common create options (shared between talos and ubuntu)
+_parse_create_opts() {
+    # Defaults
+    VM_NAME=""
+    VM_CPUS=""
+    VM_MEMORY=""
+    VM_DISK="50"
+    VM_GPU="auto"
+    VM_IP=""
+    VM_MAC=""
+    VM_GATEWAY=""
+    VM_TALOS_VERSION=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --name)    VM_NAME="$2"; shift 2 ;;
+            --cpus)    VM_CPUS="$2"; shift 2 ;;
+            --memory)  VM_MEMORY="$2"; shift 2 ;;
+            --disk)    VM_DISK="$2"; shift 2 ;;
+            --no-gpu)  VM_GPU="none"; shift ;;
+            --ip)      VM_IP="$2"; shift 2 ;;
+            --mac)     VM_MAC="$2"; shift 2 ;;
+            --gateway) VM_GATEWAY="$2"; shift 2 ;;
+            --talos-version) VM_TALOS_VERSION="$2"; shift 2 ;;
+            *)
+                log_error "Unknown option: $1"
+                return "${EXIT_INVALID_ARGS}"
+                ;;
+        esac
+    done
+
+    # Apply smart defaults
+    if [[ -z "${VM_CPUS}" ]]; then
+        VM_CPUS="$(_auto_cpus)"
+    fi
+    if [[ -z "${VM_MEMORY}" ]]; then
+        VM_MEMORY="$(_auto_memory)"
+    fi
+    if [[ -z "${VM_GATEWAY}" ]]; then
+        VM_GATEWAY="$(_host_gateway)"
+    fi
+
+    # GPU default: attach if available and not --no-gpu
+    if [[ "${VM_GPU}" == "auto" ]]; then
+        if _has_gpu; then
+            VM_GPU="attach"
+        else
+            VM_GPU="none"
+        fi
+    fi
+
+    # /32 direct-route mode checks
+    if _is_direct_route_mode; then
+        if [[ -z "${VM_MAC}" || -z "${VM_IP}" ]]; then
+            log_error "/32 direct-route mode detected."
+            log_error "Additional IPs require a virtual MAC from your hosting provider."
+            log_error "Please specify: vmctl create <type> --mac <MAC> --ip <IP>"
+            return "${EXIT_INVALID_ARGS}"
+        fi
+    else
+        # Standard mode: generate random MAC if not provided
+        if [[ -z "${VM_MAC}" ]]; then
+            VM_MAC="$(_random_mac)"
+        fi
+    fi
+}
+
+# vmctl create talos — create a Talos Linux VM
+cmd_create_talos() {
+    _parse_create_opts "$@" || return $?
+
+    _require_command virsh libvirt-clients || return $?
+    _require_command virt-install virtinst || return $?
+
+    # Auto-name
+    if [[ -z "${VM_NAME}" ]]; then
+        VM_NAME="$(_auto_name "talos")"
+    fi
+
+    if _vm_exists "${VM_NAME}"; then
+        log_error "VM '${VM_NAME}' already exists"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Creating Talos VM: ${VM_NAME}"
+    log_info "  vCPUs:   ${VM_CPUS}"
+    log_info "  Memory:  ${VM_MEMORY} MiB"
+    log_info "  Disk:    ${VM_DISK} GiB"
+    log_info "  GPU:     ${VM_GPU}"
+    log_info "  MAC:     ${VM_MAC}"
+    if [[ -n "${VM_IP}" ]]; then
+        log_info "  IP:      ${VM_IP}"
+    fi
+
+    # Fetch Talos version
+    if [[ -z "${VM_TALOS_VERSION}" ]]; then
+        log_info "Fetching latest Talos version..."
+        VM_TALOS_VERSION="$(_fetch_talos_version)" || return $?
+    fi
+    log_info "  Talos:   ${VM_TALOS_VERSION}"
+
+    # Get schematic ID and download image
+    local schematic_id
+    schematic_id="$(_get_talos_schematic_id)" || return $?
+
+    local base_image
+    base_image="$(_download_talos_image "${VM_TALOS_VERSION}" "${schematic_id}")" || return $?
+
+    # Create a copy of the image for this VM
+    local vm_disk="/var/lib/libvirt/images/${VM_NAME}.raw"
+    log_info "Creating VM disk: ${vm_disk}"
+    cp "${base_image}" "${vm_disk}"
+
+    # Resize the disk to the requested size
+    if command -v qemu-img &>/dev/null; then
+        qemu-img resize "${vm_disk}" "${VM_DISK}G" 2>/dev/null || true
+    fi
+
+    # Determine network config
+    local net_args
+    net_args="bridge=$(_bridge_name),model=virtio,mac=${VM_MAC}"
+
+    # Build virt-install command
+    local -a cmd=(
+        virt-install
+        --name "${VM_NAME}"
+        --vcpus "${VM_CPUS}"
+        --memory "${VM_MEMORY}"
+        --disk "path=${vm_disk},format=raw,bus=virtio"
+        --network "${net_args}"
+        --os-variant "linux2022"
+        --boot "uefi"
+        --noautoconsole
+        --import
+        --metadata "description=${VMCTL_MANAGED_TAG}"
+    )
+
+    # Attach GPU if requested
+    if [[ "${VM_GPU}" == "attach" ]]; then
+        local gpu_slot=""
+        gpu_slot="$(lspci -nn 2>/dev/null \
+            | grep -i 'nvidia.*\[03' \
+            | awk '{print $1}' | head -n1)"
+
+        if [[ -n "${gpu_slot}" ]]; then
+            # Bind to vfio-pci first
+            local current_driver
+            current_driver="$(_gpu_current_driver "${gpu_slot}")"
+            if [[ "${current_driver}" != "vfio-pci" ]]; then
+                log_info "Binding GPU ${gpu_slot} to vfio-pci..."
+                _pci_unbind "${gpu_slot}"
+                local audio_slot="${gpu_slot%.*}.1"
+                if [[ -d "/sys/bus/pci/devices/0000:${audio_slot}" ]]; then
+                    _pci_unbind "${audio_slot}"
+                fi
+                sleep 1
+                _pci_bind "${gpu_slot}" "vfio-pci"
+                if [[ -d "/sys/bus/pci/devices/0000:${audio_slot}" ]]; then
+                    _pci_bind "${audio_slot}" "vfio-pci"
+                fi
+            fi
+            cmd+=(--hostdev "${gpu_slot},type=pci")
+        else
+            log_warn "No GPU found for passthrough — continuing without GPU"
+        fi
+    fi
+
+    log_info "Running virt-install..."
+    if "${cmd[@]}" 2>&1; then
+        log_success "VM '${VM_NAME}' created and started"
+    else
+        log_error "Failed to create VM '${VM_NAME}'"
+        rm -f "${vm_disk}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Use 'vmctl info ${VM_NAME}' to check the VM status"
+    if [[ -n "${VM_IP}" ]]; then
+        log_info "Configure Talos with: talosctl apply-config --nodes ${VM_IP} ..."
+    fi
+}
+
+# vmctl create ubuntu — create an Ubuntu Desktop VM
+cmd_create_ubuntu() {
+    _parse_create_opts "$@" || return $?
+
+    _require_command virsh libvirt-clients || return $?
+    _require_command virt-install virtinst || return $?
+
+    # Auto-name
+    if [[ -z "${VM_NAME}" ]]; then
+        VM_NAME="$(_auto_name "ubuntu-desktop")"
+    fi
+
+    if _vm_exists "${VM_NAME}"; then
+        log_error "VM '${VM_NAME}' already exists"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_info "Creating Ubuntu Desktop VM: ${VM_NAME}"
+    log_info "  vCPUs:   ${VM_CPUS}"
+    log_info "  Memory:  ${VM_MEMORY} MiB"
+    log_info "  Disk:    ${VM_DISK} GiB"
+    log_info "  GPU:     ${VM_GPU}"
+    log_info "  MAC:     ${VM_MAC}"
+
+    # Check for Ubuntu ISO
+    local iso_dir="${VMCTL_IMAGE_DIR}"
+    local iso_file=""
+    iso_file="$(find "${iso_dir}" -maxdepth 1 -name 'ubuntu-*.iso' -print -quit 2>/dev/null)" || true
+
+    if [[ -z "${iso_file}" ]]; then
+        log_error "No Ubuntu ISO found in ${iso_dir}"
+        log_info "Download one with:"
+        log_info "  sudo mkdir -p ${iso_dir}"
+        log_info "  sudo wget -O ${iso_dir}/ubuntu-25.10-desktop-amd64.iso \\"
+        log_info "    https://releases.ubuntu.com/25.10/ubuntu-25.10-desktop-amd64.iso"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+    log_info "  ISO:     ${iso_file}"
+
+    # Create disk
+    local vm_disk="/var/lib/libvirt/images/${VM_NAME}.qcow2"
+    log_info "Creating VM disk: ${vm_disk} (${VM_DISK} GiB)"
+    qemu-img create -f qcow2 "${vm_disk}" "${VM_DISK}G" 2>/dev/null
+
+    # Cloud-Init data (if IP is specified, configure static networking)
+    local cloud_init_args=()
+    if [[ -n "${VM_IP}" ]] && _is_direct_route_mode; then
+        local ci_dir="${VMCTL_CONFIG_DIR}/cloud-init-${VM_NAME}"
+        mkdir -p "${ci_dir}"
+
+        # Meta-data
+        cat > "${ci_dir}/meta-data" << EOF
+instance-id: ${VM_NAME}
+local-hostname: ${VM_NAME}
+EOF
+
+        # Network config for /32 mode
+        cat > "${ci_dir}/network-config" << EOF
+version: 2
+ethernets:
+  enp1s0:
+    addresses: [${VM_IP}/32]
+    routes:
+      - on-link: true
+        to: 0.0.0.0/0
+        via: ${VM_GATEWAY}
+    nameservers:
+      addresses: [185.12.64.1, 185.12.64.2]
+EOF
+
+        # User-data
+        cat > "${ci_dir}/user-data" << EOF
+#cloud-config
+hostname: ${VM_NAME}
+manage_etc_hosts: true
+users:
+  - name: user
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: \$6\$rounds=4096\$vmctl\$placeholder
+ssh_pwauth: true
+package_update: true
+packages:
+  - qemu-guest-agent
+runcmd:
+  - systemctl enable --now qemu-guest-agent
+EOF
+
+        # Create Cloud-Init ISO
+        local ci_iso="${VMCTL_CONFIG_DIR}/${VM_NAME}-cidata.iso"
+        if command -v genisoimage &>/dev/null; then
+            genisoimage -output "${ci_iso}" -volid cidata -joliet -rock \
+                "${ci_dir}/user-data" "${ci_dir}/meta-data" "${ci_dir}/network-config" \
+                2>/dev/null
+            cloud_init_args+=(--disk "path=${ci_iso},device=cdrom")
+        elif command -v cloud-localds &>/dev/null; then
+            cloud-localds -N "${ci_dir}/network-config" "${ci_iso}" "${ci_dir}/user-data" \
+                2>/dev/null
+            cloud_init_args+=(--disk "path=${ci_iso},device=cdrom")
+        else
+            log_warn "Neither genisoimage nor cloud-localds found — skipping Cloud-Init"
+        fi
+    fi
+
+    # Network config
+    local net_args
+    net_args="bridge=$(_bridge_name),model=virtio,mac=${VM_MAC}"
+
+    # Build virt-install command
+    local -a cmd=(
+        virt-install
+        --name "${VM_NAME}"
+        --vcpus "${VM_CPUS}"
+        --memory "${VM_MEMORY}"
+        --disk "path=${vm_disk},format=qcow2,bus=virtio,size=${VM_DISK}"
+        --cdrom "${iso_file}"
+        "${cloud_init_args[@]}"
+        --network "${net_args}"
+        --os-variant "ubuntu24.04"
+        --boot "uefi"
+        --noautoconsole
+        --metadata "description=${VMCTL_MANAGED_TAG}"
+    )
+
+    # Attach GPU if requested
+    if [[ "${VM_GPU}" == "attach" ]]; then
+        local gpu_slot=""
+        gpu_slot="$(lspci -nn 2>/dev/null \
+            | grep -i 'nvidia.*\[03' \
+            | awk '{print $1}' | head -n1)"
+
+        if [[ -n "${gpu_slot}" ]]; then
+            local current_driver
+            current_driver="$(_gpu_current_driver "${gpu_slot}")"
+            if [[ "${current_driver}" != "vfio-pci" ]]; then
+                log_info "Binding GPU ${gpu_slot} to vfio-pci..."
+                _pci_unbind "${gpu_slot}"
+                local audio_slot="${gpu_slot%.*}.1"
+                if [[ -d "/sys/bus/pci/devices/0000:${audio_slot}" ]]; then
+                    _pci_unbind "${audio_slot}"
+                fi
+                sleep 1
+                _pci_bind "${gpu_slot}" "vfio-pci"
+                if [[ -d "/sys/bus/pci/devices/0000:${audio_slot}" ]]; then
+                    _pci_bind "${audio_slot}" "vfio-pci"
+                fi
+            fi
+            cmd+=(--hostdev "${gpu_slot},type=pci")
+        else
+            log_warn "No GPU found for passthrough — continuing without GPU"
+        fi
+    fi
+
+    log_info "Running virt-install..."
+    if "${cmd[@]}" 2>&1; then
+        log_success "VM '${VM_NAME}' created"
+        log_info "Connect via: virt-viewer ${VM_NAME} (or use VNC)"
+    else
+        log_error "Failed to create VM '${VM_NAME}'"
+        rm -f "${vm_disk}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+}
+
 cmd_create() {
     local vm_type="${1:-}"
+    shift 2>/dev/null || true
     case "${vm_type}" in
-        talos|ubuntu)
-            log_info "vmctl create ${vm_type} — not yet implemented"
-            ;;
+        talos)  cmd_create_talos "$@" ;;
+        ubuntu) cmd_create_ubuntu "$@" ;;
         *)
             log_error "Usage: vmctl create {talos|ubuntu} [options]"
             return "${EXIT_INVALID_ARGS}"
