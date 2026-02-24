@@ -421,6 +421,57 @@ check_secure_boot() {
     return "${EXIT_SUCCESS}"
 }
 
+# Check whether the script is running inside a terminal multiplexer
+# (tmux, screen, etc.).  On remote servers a multiplexer ensures the
+# bootstrap survives SSH/tunnel disconnections — critical when bridge
+# networking is reconfigured.  In --yes mode only a warning is emitted;
+# otherwise the script aborts with clear instructions.
+check_terminal_multiplexer() {
+    log_step "session" "Checking terminal multiplexer..."
+
+    # Detect common multiplexers
+    if [[ -n "${TMUX:-}" ]]; then
+        log_success "Running inside tmux"
+        return "${EXIT_SUCCESS}"
+    fi
+
+    if [[ "${TERM:-}" == screen* ]]; then
+        log_success "Running inside GNU screen"
+        return "${EXIT_SUCCESS}"
+    fi
+
+    if [[ -n "${STY:-}" ]]; then
+        log_success "Running inside GNU screen"
+        return "${EXIT_SUCCESS}"
+    fi
+
+    # Not inside a multiplexer
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_warn "Not running inside a terminal multiplexer (tmux/screen)"
+        log_warn "In a real run this would abort — use tmux to protect your session"
+        return "${EXIT_SUCCESS}"
+    fi
+
+    if [[ "${YES_MODE}" == "true" ]]; then
+        log_warn "Not running inside a terminal multiplexer (tmux/screen)"
+        log_warn "If the connection drops the bootstrap will continue in the background"
+        log_warn "but interactive prompts (reboot, bridge) will be skipped."
+        return "${EXIT_SUCCESS}"
+    fi
+
+    log_error "Not running inside a terminal multiplexer (tmux/screen)"
+    log_error ""
+    log_error "Bootstrapping modifies networking and may require a reboot."
+    log_error "If your SSH/tunnel connection drops, the process will be killed."
+    log_error ""
+    log_error "Please run inside tmux (recommended):"
+    log_error "  tmux new-session -s bootstrap"
+    log_error "  sudo ./gpu-vm-bootstrap.sh"
+    log_error ""
+    log_error "Or use --yes to continue without a multiplexer (non-interactive)."
+    return "${EXIT_GENERAL_ERROR}"
+}
+
 # Run all pre-flight checks
 run_preflight_checks() {
     log_phase "0" "Pre-flight Checks"
@@ -434,6 +485,8 @@ run_preflight_checks() {
     check_network
 
     check_secure_boot
+
+    check_terminal_multiplexer
 
     log_success "All pre-flight checks passed"
 }
@@ -1567,23 +1620,37 @@ configure_bridge_interface() {
 }
 
 # Apply the Netplan configuration to activate the bridge
+#
+# Uses 'netplan try --timeout 120' for a safe roll-out: if the new
+# configuration breaks connectivity the previous state is automatically
+# restored after 120 seconds.  After connectivity is verified we
+# confirm with 'netplan apply'.
 apply_bridge_config() {
     log_step "bridge" "Applying bridge configuration..."
 
     if [[ "${DRY_RUN}" == "true" ]]; then
-        log_dry_run "Would run 'netplan apply' to activate bridge"
+        log_dry_run "Would run 'netplan try --timeout 120' to activate bridge"
+        log_dry_run "Would confirm with 'netplan apply' after connectivity check"
         return 0
     fi
 
     log_warn "Applying bridge config — brief network interruption expected"
+    log_info "Using 'netplan try' — automatic rollback after 120 s if connectivity fails"
 
+    if ! netplan try --timeout 120 >> "${LOG_FILE}" 2>&1; then
+        log_error "netplan try failed — previous configuration has been restored"
+        log_error "Check ${LOG_FILE} for details"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    # netplan try succeeded; confirm permanently
     if ! netplan apply >> "${LOG_FILE}" 2>&1; then
-        log_error "netplan apply failed — check ${LOG_FILE} for details"
+        log_error "netplan apply (confirm) failed — check ${LOG_FILE} for details"
         log_warn "Network state may be inconsistent; review manually"
         return "${EXIT_GENERAL_ERROR}"
     fi
 
-    log_success "Bridge configuration applied"
+    log_success "Bridge configuration applied and confirmed"
     return 0
 }
 
@@ -1693,6 +1760,8 @@ print_summary() {
 
 # Prompt user interactively to reboot now or later
 # Uses cursor-key selection: Yes / No (default: No)
+# Falls back to a non-interactive message when stdin is not a terminal
+# (e.g. piped input, dead SSH session, VS Code tunnel disconnect).
 prompt_reboot() {
     if [[ "${REBOOT_REQUIRED}" != "true" ]]; then
         return 0
@@ -1712,6 +1781,13 @@ prompt_reboot() {
 
     # In dry-run mode, just inform
     if [[ "${DRY_RUN}" == "true" ]]; then
+        return 0
+    fi
+
+    # If stdin is not a terminal we cannot present an interactive menu
+    if [[ ! -t 0 ]]; then
+        log_warn "Reboot required to complete the setup"
+        log_warn "Run 'sudo reboot' when ready"
         return 0
     fi
 

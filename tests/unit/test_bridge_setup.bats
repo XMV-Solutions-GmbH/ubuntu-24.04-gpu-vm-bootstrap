@@ -456,10 +456,10 @@ MOCK
     run apply_bridge_config
     assert_status 0
     assert_output_contains "DRY-RUN"
-    assert_output_contains "netplan apply"
+    assert_output_contains "netplan try"
 }
 
-@test "apply_bridge_config: runs netplan apply" {
+@test "apply_bridge_config: runs netplan try then apply" {
     local mock_dir="$TEST_TMP_DIR/mocks"
     mkdir -p "$mock_dir"
 
@@ -475,25 +475,29 @@ MOCK
     assert_status 0
     assert_output_contains "Bridge configuration applied"
 
-    # Verify netplan was called with apply
+    # Verify netplan was called with try first, then apply
+    assert_file_contains "$TEST_TMP_DIR/netplan_calls.log" "try --timeout 120"
     assert_file_contains "$TEST_TMP_DIR/netplan_calls.log" "apply"
 }
 
-@test "apply_bridge_config: fails when netplan apply fails" {
+@test "apply_bridge_config: fails when netplan try fails and reports rollback" {
     local mock_dir="$TEST_TMP_DIR/mocks"
     mkdir -p "$mock_dir"
 
     cat > "$mock_dir/netplan" << 'MOCK'
 #!/bin/bash
-echo "Error: invalid YAML" >&2
-exit 1
+if [[ "$1" == "try" ]]; then
+    echo "Error: invalid YAML" >&2
+    exit 1
+fi
+exit 0
 MOCK
     chmod +x "$mock_dir/netplan"
     export PATH="$mock_dir:$PATH"
 
     run apply_bridge_config
     assert_status 1
-    assert_output_contains "netplan apply failed"
+    assert_output_contains "previous configuration has been restored"
 }
 
 # =============================================================================
@@ -715,4 +719,16 @@ MOCK
 
     run prompt_reboot
     assert_status 0
+}
+
+@test "prompt_reboot: non-interactive session shows warning instead of menu" {
+    export REBOOT_REQUIRED=true
+    export YES_MODE=false
+    export DRY_RUN=false
+    export REBOOT_ALLOWED=false
+
+    # Redirect stdin from /dev/null so -t 0 returns false
+    run prompt_reboot < /dev/null
+    assert_status 0
+    assert_output_contains "sudo reboot"
 }

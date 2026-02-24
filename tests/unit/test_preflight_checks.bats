@@ -224,3 +224,73 @@ MOCK
     assert_output_contains "Hetzner"
     assert_output_contains "rescue system"
 }
+
+# =============================================================================
+# Terminal Multiplexer Check
+# =============================================================================
+
+@test "check_terminal_multiplexer: succeeds inside tmux" {
+    export TMUX="/tmp/tmux-1000/default,12345,0"
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "tmux"
+}
+
+@test "check_terminal_multiplexer: succeeds inside GNU screen via TERM" {
+    unset TMUX
+    unset STY
+    export TERM="screen.xterm-256color"
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "screen"
+}
+
+@test "check_terminal_multiplexer: succeeds inside GNU screen via STY" {
+    unset TMUX
+    export STY="12345.pts-0.host"
+    export TERM="xterm-256color"
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "screen"
+}
+
+@test "check_terminal_multiplexer: aborts when no multiplexer in interactive mode" {
+    unset TMUX
+    unset STY
+    export TERM="xterm-256color"
+    export DRY_RUN=false
+    export YES_MODE=false
+
+    run check_terminal_multiplexer
+    [[ "$status" -ne 0 ]]
+    assert_output_contains "Not running inside a terminal multiplexer"
+    assert_output_contains "tmux new-session"
+}
+
+@test "check_terminal_multiplexer: warns but continues in --yes mode" {
+    unset TMUX
+    unset STY
+    export TERM="xterm-256color"
+    export DRY_RUN=false
+    export YES_MODE=true
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "Not running inside a terminal multiplexer"
+}
+
+@test "check_terminal_multiplexer: warns but continues in --dry-run mode" {
+    unset TMUX
+    unset STY
+    export TERM="xterm-256color"
+    export DRY_RUN=true
+    export YES_MODE=false
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "Not running inside a terminal multiplexer"
+    assert_output_contains "dry-run" || assert_output_contains "real run"
+}
