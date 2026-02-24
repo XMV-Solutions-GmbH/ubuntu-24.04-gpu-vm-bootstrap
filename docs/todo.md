@@ -146,17 +146,18 @@
 | 🟢     | Unit tests for helper functions                   | 303 total tests across 12 test files            |
 | 🟢     | Unit tests for vmctl subcommands                  | 45 tests in `test_vmctl_cli.bats`               |
 | 🟢     | Unit tests for GPU/create/networking              | 44 tests in `test_vmctl_gpu_create.bats`        |
-| ⚪     | Harness tests on real NVIDIA hardware              | Real drivers, KVM, VFIO on dedicated machine    |
-| ⚪     | E2E test framework                                | Full bootstrap on real NVIDIA machine           |
+| 🟢     | Total test count                                  | 345 tests (303 unit + 20 E2E + 22 harness)      |
+| 🟢     | Harness tests on real NVIDIA hardware              | 22 tests in `test_live_gpu.bats`, 0 failures    |
+| 🟢     | E2E test framework                                | 20 tests in `test_bootstrap_dryrun.bats`        |
 
 #### Phase 13: CI/CD & Release
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
 | 🟢     | GitHub Actions: lint + unit tests                 | ShellCheck + Bats on every push, 3 required checks |
-| ⚪     | GitHub Actions: release workflow                  | Build and publish `gpu-vm-bootstrap.sh`         |
-| ⚪     | Create release artefact bundling                  | Single `gpu-vm-bootstrap.sh` with embedded vmctl|
-| ⚪     | Documentation: final README review                | Installation, usage, examples                   |
+| 🟢     | GitHub Actions: release workflow                  | Fixed vmctl refs, artefact bundling correct      |
+| 🟢     | Create release artefact bundling                  | Uploads `gpu-vm-bootstrap.sh` + `vmctl`          |
+| 🟢     | Documentation: final README review                | Updated vmctl usage, examples, CHANGELOG v0.1.0  |
 
 ## Backlog (Post v0.1.0)
 
