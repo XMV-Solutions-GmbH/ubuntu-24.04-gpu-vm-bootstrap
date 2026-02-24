@@ -102,33 +102,42 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Implement `vmctl gpu status`                      | Show GPU binding state                          |
-| ⚪     | Implement `vmctl gpu attach <name>`               | Unbind from host, VFIO bind, attach to VM       |
-| ⚪     | Implement `vmctl gpu detach <name>`               | Detach from VM, rebind to host driver           |
+| ⚪     | Implement `vmctl gpu status`                      | Show GPU PCI slot, current binding (host/VFIO)  |
+| ⚪     | Implement `vmctl gpu attach <name>`               | Unbind from host driver, VFIO bind, hotplug to VM |
+| ⚪     | Implement `vmctl gpu detach <name>`               | Detach from VM, rebind to host NVIDIA driver    |
 
-#### Phase 9: vmctl CLI — IP Management
+#### Phase 9: vmctl CLI — Networking & Smart Defaults
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Implement `vmctl ip check`                        | ARP/nmap scan for free IPs on bridge subnet     |
+| ⚪     | Auto-detect networking mode                       | /32 direct-route vs standard subnet             |
+| ⚪     | Standard mode: ARP scan for free IPs              | `nmap -sn` or `arping` on bridge subnet         |
+| ⚪     | /32 mode: require `--mac` + `--ip`                | Exit with clear error if missing                |
+| ⚪     | Auto-detect gateway from host                     | `ip route show default`, same for all VMs       |
+| ⚪     | Smart defaults: vCPUs, memory, GPU, name          | 50% host CPUs/RAM, auto-increment names         |
+| ⚪     | Implement `vmctl ip check`                        | ARP/nmap scan for free IPs (standard mode only) |
 | ⚪     | Implement `vmctl ip list`                         | Show IPs assigned to managed VMs                |
 
 #### Phase 10: vmctl CLI — Talos Linux Support
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Fetch latest Talos version from GitHub API        | `siderolabs/talos` releases                     |
-| ⚪     | Generate NVIDIA Talos image via Image Factory     | Include `nvidia-container-toolkit`, `nvidia-fabricmanager` extensions |
-| ⚪     | Implement `vmctl create talos`                    | Full VM creation with GPU + bridge networking   |
-| ⚪     | Generate Talos machine config                     | `controlplane.yaml` or `worker.yaml`            |
+| ⚪     | Fetch latest Talos version from GitHub API        | `siderolabs/talos` releases, cache result       |
+| ⚪     | Detect GPU architecture for extension selection   | Turing+ → `nvidia-open-gpu-kernel-modules`, older → `nonfree-kmod-nvidia` |
+| ⚪     | Build Image Factory schematic JSON                | Include chosen NVIDIA ext + `nvidia-container-toolkit` |
+| ⚪     | POST schematic to Image Factory API               | `https://factory.talos.dev/schematics` → schematic ID |
+| ⚪     | Download and cache Talos image                    | `nocloud-amd64.raw.xz`, cache in `/etc/vmctl/images/` |
+| ⚪     | Implement `vmctl create talos`                    | Full VM: smart defaults, /32-aware networking, GPU |
+| ⚪     | Generate Talos machine config                     | `controlplane.yaml` or `worker.yaml` with GPU settings |
+| ⚪     | Document NVIDIA driver independence               | Host and VM drivers are decoupled via VFIO      |
 
 #### Phase 11: vmctl CLI — Ubuntu Desktop Support
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Download Ubuntu 25.10 ISO                         | Auto-fetch from official mirrors                |
-| ⚪     | Create Cloud-Init config                          | User, SSH keys, packages                        |
-| ⚪     | Implement `vmctl create ubuntu`                   | Full VM creation with GPU + bridge networking   |
+| ⚪     | Download Ubuntu 25.10 ISO                         | Auto-fetch from official mirrors, cache locally |
+| ⚪     | Create Cloud-Init config                          | User, SSH keys, packages, static IP if /32 mode |
+| ⚪     | Implement `vmctl create ubuntu`                   | Full VM: smart defaults, /32-aware networking, GPU |
 
 #### Phase 12: Testing
 

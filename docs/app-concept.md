@@ -91,21 +91,19 @@ gpu-vm-bootstrap.sh [OPTIONS]
 
 ```text
 vmctl create talos [OPTIONS]
-  --name NAME         VM name (default: talos-01)
-  --cpus N            Number of CPUs (default: 4)
-  --memory SIZE       Memory in MiB (default: 8192)
-  --disk SIZE         Disk size in GiB (default: 50)
-  --gpu               Attach GPU via VFIO passthrough
-  --ip ADDRESS        Static IP (default: auto-detect free IP)
-  --talos-version     Talos version (default: latest from GitHub)
-
 vmctl create ubuntu [OPTIONS]
-  --name NAME         VM name (default: ubuntu-desktop-01)
-  --cpus N            Number of CPUs (default: 4)
-  --memory SIZE       Memory in MiB (default: 8192)
+
+  All options below are optional — vmctl auto-detects sensible defaults.
+
+  --name NAME         VM name (default: auto-increment, e.g. talos-01)
+  --cpus N            vCPUs (default: 50% of host CPUs)
+  --memory SIZE       Memory in MiB (default: 50% of host RAM)
   --disk SIZE         Disk size in GiB (default: 50)
-  --gpu               Attach GPU via VFIO passthrough
-  --ip ADDRESS        Static IP (default: auto-detect free IP)
+  --no-gpu            Do NOT attach GPU (default: attach if VFIO-ready GPU found)
+  --ip ADDRESS        Static IP (default: auto via ARP scan or DHCP)
+  --mac ADDRESS       Virtual MAC address (required in /32 direct-route mode)
+  --gateway ADDRESS   Gateway IP (default: auto-detect from host)
+  --talos-version VER Talos version (default: latest from GitHub API)
 
 vmctl list                  List all managed VMs
 vmctl info <name>           Show VM details (IP, GPU, state)
@@ -121,6 +119,115 @@ vmctl gpu detach <name>     Detach GPU from VM, rebind to host
 vmctl ip check              Scan bridge subnet for free IPs
 vmctl ip list               List IPs assigned to managed VMs
 ```
+
+### Smart Defaults
+
+`vmctl create` is designed to require **zero mandatory parameters** in the
+common case. Every value is auto-detected or derived from the host:
+
+| Parameter | Auto-detection method | Default |
+| --------- | --------------------- | ------- |
+| Name | Increments per type | `talos-01`, `ubuntu-desktop-01` |
+| vCPUs | `nproc` | 50% of host CPUs (min 2) |
+| Memory | `free -m` | 50% of host RAM (min 2048 MiB) |
+| Disk | Constant | 50 GiB |
+| GPU | VFIO-ready GPU present? | Attach if available |
+| Gateway | `ip route show default` | Same gateway as host |
+| IP | ARP scan on bridge subnet | Next free IP |
+| MAC | Random `52:54:00:xx:xx:xx` | Auto-generated |
+| Talos ver. | GitHub API `siderolabs/talos` | Latest stable release |
+
+### Networking Modes
+
+vmctl detects the host networking mode automatically and adapts VM creation
+accordingly.
+
+#### Standard subnet mode (e.g. /24)
+
+The bridge has a routable subnet. VMs get IPs via DHCP or static assignment.
+MAC addresses are randomly generated. ARP works normally.
+
+```bash
+# Zero parameters — everything auto-detected
+vmctl create talos
+```
+
+#### /32 direct-route mode (Hetzner, OVH, etc.)
+
+The host has a /32 address with an on-link gateway. Additional IPs must be
+ordered from the hosting provider and each additional IP requires a **virtual
+MAC address** assigned in the provider's management panel (e.g. Hetzner Robot).
+The provider routes traffic for that IP exclusively to the virtual MAC.
+
+In this mode, vmctl **cannot** auto-assign IPs or MACs. It detects /32 mode
+and prompts the user for the two values it cannot determine itself:
+
+```bash
+# vmctl detects /32 and exits with a clear error:
+$ vmctl create talos
+[ERROR] /32 direct-route mode detected.
+        Additional IPs require a virtual MAC from your hosting provider.
+        Please specify: vmctl create talos --mac 00:50:56:xx:xx:xx --ip x.x.x.x
+
+# User provides the two required values:
+$ vmctl create talos --mac 00:50:56:00:AB:CD --ip 88.198.21.135
+```
+
+The gateway is auto-detected from the host. Everything else uses smart
+defaults. The VM receives a /32 static IP with the same on-link gateway
+as the host.
+
+### Talos Image Factory Integration
+
+Talos Linux does not use a traditional package manager — NVIDIA drivers
+are built into the OS image as **system extensions** via the
+[Talos Image Factory](https://factory.talos.dev/) API.
+
+#### NVIDIA driver independence
+
+With VFIO passthrough, the host NVIDIA driver and the VM NVIDIA driver are
+**completely independent**. The host unbinds its driver and binds VFIO-PCI;
+the VM receives the raw PCI device and loads its own driver. The host could
+run driver 550.x whilst the Talos VM runs 535.x — there is no coupling.
+
+The NVIDIA driver version available inside Talos is determined by the Talos
+version (each release ships compatible extension versions). vmctl does not
+need to match the host driver.
+
+#### Image build flow
+
+```text
+1. Detect host GPU architecture (Turing+? Maxwell? Etc.)
+       ↓
+2. Choose correct NVIDIA extension:
+   - Turing+ (RTX 20xx, 30xx, 40xx, A100, etc.) → nvidia-open-gpu-kernel-modules
+   - Older (Maxwell, Pascal, Volta)              → nonfree-kmod-nvidia
+       ↓
+3. Build schematic JSON:
+   {
+     "customization": {
+       "systemExtensions": {
+         "officialExtensions": [
+           "siderolabs/nvidia-open-gpu-kernel-modules",
+           "siderolabs/nvidia-container-toolkit"
+         ]
+       }
+     }
+   }
+       ↓
+4. POST to https://factory.talos.dev/schematics
+   → Response: { "id": "<schematic-sha256>" }
+       ↓
+5. Download image:
+   https://factory.talos.dev/image/<schematic-id>/<talos-version>/nocloud-amd64.raw.xz
+       ↓
+6. Decompress → use as VM disk with virt-install
+```
+
+#### Caching
+
+Downloaded images and schematic IDs are cached in `/etc/vmctl/images/` to
+avoid redundant downloads. The cache key is `{talos-version}-{schematic-id}`.
 
 ## Tech Stack
 
@@ -153,3 +260,5 @@ vmctl ip list               List IPs assigned to managed VMs
   where applicable
 - **GPU compatibility** — NVIDIA GPUs with compute capability >= 5.0
   (Maxwell and newer)
+- **Smart defaults** — `vmctl create` requires zero parameters in the
+  common case; /32 direct-route mode requires only `--mac` and `--ip`
