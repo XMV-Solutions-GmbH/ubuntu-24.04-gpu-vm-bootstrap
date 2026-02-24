@@ -82,21 +82,21 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Install vmctl to `/usr/local/bin/`                | Download from release or copy from repo         |
-| ⚪     | Create vmctl config directory                     | `/etc/vmctl/` for defaults                     |
-| ⚪     | Verify vmctl is callable                          | Post-install check                              |
+| 🟢     | Install vmctl to `/usr/local/bin/`                | Idempotent install with version matching         |
+| 🟢     | Create vmctl config directory                     | `/etc/vmctl/` for defaults                     |
+| 🟢     | Verify vmctl is callable                          | Post-install `vmctl version` check               |
 
 #### Phase 7: vmctl CLI — Core Framework
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Create `vmctl` skeleton                           | Subcommand dispatcher, help text                |
-| ⚪     | Implement `vmctl list`                            | `virsh list` wrapper with formatting            |
-| ⚪     | Implement `vmctl info <name>`                     | VM details (IP, GPU, state, resources)          |
-| ⚪     | Implement `vmctl start <name>`                    | Start a stopped VM                              |
-| ⚪     | Implement `vmctl stop <name>`                     | Graceful shutdown                               |
-| ⚪     | Implement `vmctl delete <name>`                   | Remove VM + associated storage                  |
-| ⚪     | Implement `vmctl ssh <name>`                      | SSH wrapper (Ubuntu VMs only; Talos uses talosctl) |
+| 🟢     | Create `vmctl` skeleton                           | Subcommand dispatcher, help text                |
+| 🟢     | Implement `vmctl list`                            | `virsh list` wrapper with colour-coded states   |
+| 🟢     | Implement `vmctl info <name>`                     | VM details (IP, GPU, UUID, vCPUs, memory)       |
+| 🟢     | Implement `vmctl start <name>`                    | Start a stopped VM                              |
+| 🟢     | Implement `vmctl stop <name>`                     | Graceful shutdown                               |
+| 🟢     | Implement `vmctl delete <name>`                   | Remove VM + associated storage + NVRAM          |
+| 🟢     | Implement `vmctl ssh <name>`                      | Guest agent + ARP IP detection, `exec ssh`      |
 
 #### Phase 8: vmctl CLI — GPU Management
 
@@ -134,9 +134,9 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Unit tests for argument parsing                   | Bats tests for bootstrap script flags           |
-| ⚪     | Unit tests for helper functions                   | Detection, validation, idempotency helpers      |
-| ⚪     | Unit tests for vmctl subcommands                  | Argument parsing, input validation              |
+| 🟢     | Unit tests for argument parsing                   | 38 tests in `test_argument_parsing.bats`        |
+| 🟢     | Unit tests for helper functions                   | 258 total tests across 11 test files            |
+| 🟢     | Unit tests for vmctl subcommands                  | 45 tests in `test_vmctl_cli.bats`               |
 | ⚪     | Harness tests on real NVIDIA hardware              | Real drivers, KVM, VFIO on dedicated machine    |
 | ⚪     | E2E test framework                                | Full bootstrap on real NVIDIA machine           |
 
@@ -144,7 +144,7 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | GitHub Actions: lint + unit tests                 | ShellCheck + Bats on every push                 |
+| 🟢     | GitHub Actions: lint + unit tests                 | ShellCheck + Bats on every push, 3 required checks |
 | ⚪     | GitHub Actions: release workflow                  | Build and publish `gpu-vm-bootstrap.sh`         |
 | ⚪     | Create release artefact bundling                  | Single `gpu-vm-bootstrap.sh` with embedded vmctl|
 | ⚪     | Documentation: final README review                | Installation, usage, examples                   |
