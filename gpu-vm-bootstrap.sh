@@ -6,7 +6,7 @@
 # virtualisation host with KVM, VFIO passthrough, and bridge networking.
 #
 # Usage:
-#   curl -fsSL https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/releases/latest/download/gpu-vm-bootstrap.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/gpu-vm-bootstrap.sh | sudo bash
 #
 # Copyright (c) 2024-2026 XMV Solutions GmbH
 # See LICENCE files for details.
@@ -19,6 +19,7 @@ set -euo pipefail
 
 readonly SCRIPT_NAME="gpu-vm-bootstrap"
 readonly SCRIPT_VERSION="0.1.0-dev"
+readonly SCRIPT_DOWNLOAD_URL="https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/gpu-vm-bootstrap.sh"
 LOG_FILE="${LOG_FILE:-/var/log/${SCRIPT_NAME}.log}"
 CONFIG_DIR="${CONFIG_DIR:-/etc/vmctl}"
 
@@ -213,7 +214,10 @@ GPU Modes:
   flexible    GPU stays on host driver; bind/unbind on demand via vmctl
 
 Examples:
-  # Full bootstrap with defaults
+  # One-liner bootstrap (auto-launches in tmux)
+  curl -fsSL <URL> | sudo bash
+
+  # Full bootstrap with defaults (inside tmux)
   sudo ./gpu-vm-bootstrap.sh
 
   # Non-interactive, skip bridge setup
@@ -223,7 +227,7 @@ Examples:
   sudo ./gpu-vm-bootstrap.sh --dry-run
 
   # Exclusive GPU passthrough mode
-  sudo ./gpu-vm-bootstrap.sh --gpu-mode exclusive --yes
+  sudo ./gpu-vm-bootstrap.sh --gpu-mode exclusive
 
 EOF
 }
@@ -421,34 +425,71 @@ check_secure_boot() {
     return "${EXIT_SUCCESS}"
 }
 
-# Check whether the script is running inside a terminal multiplexer
-# (tmux, screen, etc.).  On remote servers a multiplexer ensures the
-# bootstrap survives SSH/tunnel disconnections — critical when bridge
-# networking is reconfigured.  In --yes mode only a warning is emitted;
-# otherwise the script aborts with clear instructions.
+# Detect whether we are running inside a terminal multiplexer.
+_is_inside_multiplexer() {
+    [[ -n "${TMUX:-}" ]] && return 0
+    [[ "${TERM:-}" == screen* ]] && return 0
+    [[ -n "${STY:-}" ]] && return 0
+    return 1
+}
+
+# Re-launch the bootstrap inside a tmux session so it survives
+# SSH/tunnel disconnections.  This is called automatically when bridge
+# setup is enabled and no multiplexer is detected.
+#
+# For piped execution (curl | sudo bash) the script cannot re-exec
+# itself from «$0», so it downloads a fresh copy first.
+_relaunch_in_tmux() {
+    log_info "Bridge setup enabled — a terminal multiplexer is required"
+
+    # Install tmux if not present
+    if ! command -v tmux &>/dev/null; then
+        log_info "Installing tmux..."
+        apt-get update -qq >/dev/null 2>&1
+        apt-get install -y -qq tmux >/dev/null 2>&1
+    fi
+
+    # Determine the script file path
+    local script_path="${BASH_SOURCE[0]:-}"
+    if [[ -z "${script_path}" ]] || [[ ! -f "${script_path}" ]]; then
+        # Piped execution — download a copy
+        script_path="/tmp/${SCRIPT_NAME}.sh"
+        log_info "Downloading script to ${script_path}..."
+        curl -fsSL "${SCRIPT_DOWNLOAD_URL}" -o "${script_path}"
+        chmod +x "${script_path}"
+    fi
+
+    # Build the argument list for re-execution
+    local -a args=("$@")
+
+    log_info "Launching tmux session 'bootstrap'..."
+    log_info "If disconnected, re-attach with: sudo tmux attach -t bootstrap"
+
+    # Replace the current process with a tmux session
+    exec tmux new-session -s bootstrap "${script_path}" "${args[@]}"
+}
+
+# Safety-net check: verify we are inside a multiplexer before bridge
+# setup begins.  Normally _relaunch_in_tmux() will have handled this,
+# but if the re-launch failed or was skipped this check catches it.
 check_terminal_multiplexer() {
+    # Only relevant when bridge networking will be reconfigured
+    if [[ "${SKIP_BRIDGE}" == "true" ]]; then
+        log_debug "Bridge setup skipped — multiplexer check not required"
+        return "${EXIT_SUCCESS}"
+    fi
+
     log_step "session" "Checking terminal multiplexer..."
 
-    # Detect common multiplexers
-    if [[ -n "${TMUX:-}" ]]; then
-        log_success "Running inside tmux"
+    if _is_inside_multiplexer; then
+        log_success "Running inside a terminal multiplexer"
         return "${EXIT_SUCCESS}"
     fi
 
-    if [[ "${TERM:-}" == screen* ]]; then
-        log_success "Running inside GNU screen"
-        return "${EXIT_SUCCESS}"
-    fi
-
-    if [[ -n "${STY:-}" ]]; then
-        log_success "Running inside GNU screen"
-        return "${EXIT_SUCCESS}"
-    fi
-
-    # Not inside a multiplexer
+    # Not inside a multiplexer — the auto-relaunch must have failed
     if [[ "${DRY_RUN}" == "true" ]]; then
         log_warn "Not running inside a terminal multiplexer (tmux/screen)"
-        log_warn "In a real run this would abort — use tmux to protect your session"
+        log_warn "In a real run the script would auto-launch tmux"
         return "${EXIT_SUCCESS}"
     fi
 
@@ -461,10 +502,7 @@ check_terminal_multiplexer() {
 
     log_error "Not running inside a terminal multiplexer (tmux/screen)"
     log_error ""
-    log_error "Bootstrapping modifies networking and may require a reboot."
-    log_error "If your SSH/tunnel connection drops, the process will be killed."
-    log_error ""
-    log_error "Please run inside tmux (recommended):"
+    log_error "Automatic tmux launch failed.  Please start manually:"
     log_error "  tmux new-session -s bootstrap"
     log_error "  sudo ./gpu-vm-bootstrap.sh"
     log_error ""
@@ -1872,6 +1910,22 @@ main() {
     log_info "${SCRIPT_NAME} v${SCRIPT_VERSION}"
     log_info "GPU mode: ${GPU_MODE}"
     log_info "Dry run: ${DRY_RUN}"
+
+    # Auto-detect piped execution (e.g. curl | sudo bash) and imply --yes
+    # Piped stdin is non-interactive, so all prompts must be skipped.
+    if [[ ! -t 0 ]] && [[ "${YES_MODE}" != "true" ]]; then
+        log_info "Piped execution detected — enabling non-interactive mode (--yes)"
+        YES_MODE=true
+    fi
+
+    # Auto-launch inside tmux when bridge setup is enabled and no
+    # multiplexer is detected.  Skipped in dry-run so previews work
+    # without tmux.  The _relaunch_in_tmux function never returns — it
+    # replaces the process with a tmux session.
+    if [[ "${SKIP_BRIDGE}" != "true" ]] && [[ "${DRY_RUN}" != "true" ]] \
+       && ! _is_inside_multiplexer; then
+        _relaunch_in_tmux "$@"
+    fi
 
     # Phase 0: Pre-flight checks
     run_preflight_checks
