@@ -128,7 +128,6 @@
 | 🟢     | POST schematic to Image Factory API               | `https://factory.talos.dev/schematics` → ID     |
 | 🟢     | Download and cache Talos image                    | `nocloud-amd64.raw.xz`, cache in `/etc/vmctl/images/` |
 | 🟢     | Implement `vmctl create talos`                    | Smart defaults, /32 networking, GPU passthrough |
-| ⚪     | Generate Talos machine config                     | `controlplane.yaml` or `worker.yaml` — backlog  |
 | 🟢     | Document NVIDIA driver independence               | Host and VM drivers are decoupled via VFIO      |
 
 #### Phase 11: vmctl CLI — Ubuntu Desktop Support
