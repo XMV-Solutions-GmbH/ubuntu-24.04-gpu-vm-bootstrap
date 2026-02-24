@@ -370,6 +370,25 @@ Types: `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`, `ci`, `perf`
 - Hotfix: `hotfix/<description>`
 - Release: `release/<version>`
 
+### Workflow
+
+**Never commit directly to `main`.** All work **MUST** happen on feature branches.
+
+1. Create a feature branch from `main` (e.g. `feature/phase2-nvidia-setup`)
+2. Implement changes, commit with Conventional Commits
+3. Push the branch and open a Pull Request against `main`
+4. PR description must include: summary of changes, test results, quality checklist
+5. Merge only after review (or self-merge if sole maintainer)
+
+```bash
+# Standard workflow
+git checkout main && git pull
+git checkout -b feature/<description>
+# ... implement, test, commit ...
+git push -u origin feature/<description>
+gh pr create --base main --title "feat(<scope>): <description>" --body "..."
+```
+
 ---
 
 ## Reminder

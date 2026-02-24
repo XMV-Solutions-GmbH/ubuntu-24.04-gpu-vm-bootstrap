@@ -35,11 +35,11 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Create `gpu-vm-bootstrap.sh` skeleton            | Argument parsing, logging, phase runner          |
-| ⚪     | Implement argument parsing                       | `--skip-*`, `--gpu-mode`, `--dry-run`, `--yes`  |
-| ⚪     | Implement logging framework                      | Timestamps, colours, log file output            |
-| ⚪     | Implement pre-flight checks                      | Ubuntu 24.04 detection, root/sudo check, internet|
-| ⚪     | Implement idempotency helpers                    | Check-if-installed functions                     |
+| 🟢     | Create `gpu-vm-bootstrap.sh` skeleton            | Argument parsing, logging, phase runner          |
+| 🟢     | Implement argument parsing                       | `--skip-*`, `--gpu-mode`, `--dry-run`, `--yes`  |
+| 🟢     | Implement logging framework                      | Timestamps, colours, log file output            |
+| 🟢     | Implement pre-flight checks                      | Ubuntu 24.04 detection, root/sudo check, internet|
+| 🟢     | Implement idempotency helpers                    | Check-if-installed functions                     |
 
 #### Phase 2: Bootstrap Script — NVIDIA Setup
 

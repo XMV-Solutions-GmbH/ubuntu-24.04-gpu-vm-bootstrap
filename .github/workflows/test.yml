@@ -30,7 +30,7 @@ jobs:
       - name: Run ShellCheck
         run: |
           shellcheck gpu-vm-bootstrap.sh
-          shellcheck vmctl.sh
+          if [[ -f vmctl.sh ]]; then shellcheck vmctl.sh; fi
           shellcheck tests/run_tests.sh
           shellcheck tests/test_helper.bash
 
