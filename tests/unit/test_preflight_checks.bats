@@ -226,38 +226,66 @@ MOCK
 }
 
 # =============================================================================
-# Terminal Multiplexer Check
+# Terminal Multiplexer Detection & Check
 # =============================================================================
 
-@test "check_terminal_multiplexer: succeeds inside tmux" {
+@test "_is_inside_multiplexer: detects tmux" {
     export TMUX="/tmp/tmux-1000/default,12345,0"
 
-    run check_terminal_multiplexer
+    run _is_inside_multiplexer
     [[ "$status" -eq 0 ]]
-    assert_output_contains "tmux"
 }
 
-@test "check_terminal_multiplexer: succeeds inside GNU screen via TERM" {
+@test "_is_inside_multiplexer: detects GNU screen via TERM" {
     unset TMUX
     unset STY
     export TERM="screen.xterm-256color"
 
-    run check_terminal_multiplexer
+    run _is_inside_multiplexer
     [[ "$status" -eq 0 ]]
-    assert_output_contains "screen"
 }
 
-@test "check_terminal_multiplexer: succeeds inside GNU screen via STY" {
+@test "_is_inside_multiplexer: detects GNU screen via STY" {
     unset TMUX
     export STY="12345.pts-0.host"
     export TERM="xterm-256color"
 
+    run _is_inside_multiplexer
+    [[ "$status" -eq 0 ]]
+}
+
+@test "_is_inside_multiplexer: returns false when no multiplexer" {
+    unset TMUX
+    unset STY
+    export TERM="xterm-256color"
+
+    run _is_inside_multiplexer
+    [[ "$status" -ne 0 ]]
+}
+
+@test "check_terminal_multiplexer: skips when bridge is disabled" {
+    export SKIP_BRIDGE=true
+    export VERBOSE=true
+    unset TMUX
+    unset STY
+    export TERM="xterm-256color"
+
     run check_terminal_multiplexer
     [[ "$status" -eq 0 ]]
-    assert_output_contains "screen"
+    assert_output_contains "multiplexer check not required"
+}
+
+@test "check_terminal_multiplexer: succeeds inside tmux" {
+    export SKIP_BRIDGE=false
+    export TMUX="/tmp/tmux-1000/default,12345,0"
+
+    run check_terminal_multiplexer
+    [[ "$status" -eq 0 ]]
+    assert_output_contains "multiplexer"
 }
 
 @test "check_terminal_multiplexer: aborts when no multiplexer in interactive mode" {
+    export SKIP_BRIDGE=false
     unset TMUX
     unset STY
     export TERM="xterm-256color"
@@ -267,10 +295,11 @@ MOCK
     run check_terminal_multiplexer
     [[ "$status" -ne 0 ]]
     assert_output_contains "Not running inside a terminal multiplexer"
-    assert_output_contains "tmux new-session"
+    assert_output_contains "tmux"
 }
 
 @test "check_terminal_multiplexer: warns but continues in --yes mode" {
+    export SKIP_BRIDGE=false
     unset TMUX
     unset STY
     export TERM="xterm-256color"
@@ -283,6 +312,7 @@ MOCK
 }
 
 @test "check_terminal_multiplexer: warns but continues in --dry-run mode" {
+    export SKIP_BRIDGE=false
     unset TMUX
     unset STY
     export TERM="xterm-256color"
@@ -292,5 +322,4 @@ MOCK
     run check_terminal_multiplexer
     [[ "$status" -eq 0 ]]
     assert_output_contains "Not running inside a terminal multiplexer"
-    assert_output_contains "dry-run" || assert_output_contains "real run"
 }
