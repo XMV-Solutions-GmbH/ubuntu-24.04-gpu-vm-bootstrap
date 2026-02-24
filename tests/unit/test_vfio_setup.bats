@@ -291,21 +291,18 @@ EOF
 
 @test "handle_vfio_reboot: warns when reboot required" {
     export VFIO_REBOOT_REQUIRED=true
-    export REBOOT_ALLOWED=false
 
     run handle_vfio_reboot
     assert_status 0
     assert_output_contains "reboot"
-    assert_output_contains "sudo reboot"
+    assert_output_contains "IOMMU"
 }
 
-@test "handle_vfio_reboot: notes auto-reboot when --reboot set" {
+@test "handle_vfio_reboot: sets global REBOOT_REQUIRED flag" {
     export VFIO_REBOOT_REQUIRED=true
-    export REBOOT_ALLOWED=true
 
-    run handle_vfio_reboot
-    assert_status 0
-    assert_output_contains "end of the bootstrap"
+    handle_vfio_reboot
+    [[ "${REBOOT_REQUIRED}" == "true" ]]
 }
 
 # =============================================================================

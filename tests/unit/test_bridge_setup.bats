@@ -20,6 +20,7 @@ setup() {
     export PRIMARY_NIC_IP=""
     export PRIMARY_NIC_GATEWAY=""
     export PRIMARY_NIC_DNS=""
+    export DIRECT_ROUTE_MODE=false
 
     mkdir -p "$NETPLAN_DIR"
 
@@ -143,6 +144,71 @@ EOF
     assert_status 0
     assert_output_contains "ens5"
     assert_output_contains "10.0.0.42/24"
+}
+
+@test "detect_primary_nic: detects /32 direct-route mode with onlink flag" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"route show default"* ]]; then
+    echo "default via 88.198.21.129 dev enp4s0 onlink"
+elif [[ "$*" == *"-4 addr show dev"* ]]; then
+    echo "    inet 88.198.21.134/32 scope global enp4s0"
+fi
+MOCK
+    chmod +x "$mock_dir/ip"
+
+    export PATH="$mock_dir:$PATH"
+
+    run detect_primary_nic
+    assert_status 0
+    assert_output_contains "enp4s0"
+    assert_output_contains "88.198.21.134/32"
+    assert_output_contains "/32 direct-route mode"
+}
+
+@test "detect_primary_nic: does not set direct-route mode for /24 subnet" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"route show default"* ]]; then
+    echo "default via 192.168.1.1 dev eth0 proto static metric 100"
+elif [[ "$*" == *"-4 addr show dev"* ]]; then
+    echo "    inet 192.168.1.100/24 brd 192.168.1.255 scope global eth0"
+fi
+MOCK
+    chmod +x "$mock_dir/ip"
+
+    export PATH="$mock_dir:$PATH"
+
+    run detect_primary_nic
+    assert_status 0
+    assert_output_not_contains "/32 direct-route"
+}
+
+@test "detect_primary_nic: /32 without onlink flag does not trigger direct-route" {
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"route show default"* ]]; then
+    echo "default via 10.0.0.1 dev eth0 proto static"
+elif [[ "$*" == *"-4 addr show dev"* ]]; then
+    echo "    inet 10.0.0.5/32 scope global eth0"
+fi
+MOCK
+    chmod +x "$mock_dir/ip"
+
+    export PATH="$mock_dir:$PATH"
+
+    run detect_primary_nic
+    assert_status 0
+    assert_output_not_contains "/32 direct-route"
 }
 
 @test "detect_primary_nic: detects NIC on typical server with eno1" {
@@ -311,6 +377,73 @@ MOCK
 
     local netplan_file="$NETPLAN_DIR/60-bridge-br0.yaml"
     assert_file_contains "$netplan_file" "forward-delay: 4"
+}
+
+@test "configure_bridge_interface: /32 direct-route uses on-link gateway" {
+    export PRIMARY_NIC="enp4s0"
+    export PRIMARY_NIC_IP="88.198.21.134/32"
+    export PRIMARY_NIC_GATEWAY="88.198.21.129"
+    export PRIMARY_NIC_DNS="185.12.64.2,185.12.64.1"
+    export DIRECT_ROUTE_MODE=true
+
+    run configure_bridge_interface
+    assert_status 0
+
+    local netplan_file="$NETPLAN_DIR/60-bridge-br0.yaml"
+    assert_file_exists "$netplan_file"
+    assert_file_contains "$netplan_file" "on-link: true"
+    assert_file_contains "$netplan_file" "88.198.21.134/32"
+    assert_file_contains "$netplan_file" "88.198.21.129"
+    assert_file_contains "$netplan_file" "stp: false"
+    assert_file_contains "$netplan_file" "forward-delay: 0"
+    assert_file_contains "$netplan_file" "enp4s0"
+    assert_file_contains "$netplan_file" "185.12.64.2"
+}
+
+@test "configure_bridge_interface: /32 direct-route disables STP" {
+    export PRIMARY_NIC="eth0"
+    export PRIMARY_NIC_IP="203.0.113.10/32"
+    export PRIMARY_NIC_GATEWAY="203.0.113.1"
+    export PRIMARY_NIC_DNS=""
+    export DIRECT_ROUTE_MODE=true
+
+    run configure_bridge_interface
+    assert_status 0
+
+    local netplan_file="$NETPLAN_DIR/60-bridge-br0.yaml"
+    assert_file_contains "$netplan_file" "stp: false"
+    assert_file_contains "$netplan_file" "forward-delay: 0"
+    # Should NOT have stp: true
+    ! grep -q "stp: true" "$netplan_file"
+}
+
+@test "configure_bridge_interface: standard mode uses STP enabled" {
+    export PRIMARY_NIC="eth0"
+    export PRIMARY_NIC_IP="192.168.1.100/24"
+    export PRIMARY_NIC_GATEWAY="192.168.1.1"
+    export PRIMARY_NIC_DNS=""
+    export DIRECT_ROUTE_MODE=false
+
+    run configure_bridge_interface
+    assert_status 0
+
+    local netplan_file="$NETPLAN_DIR/60-bridge-br0.yaml"
+    assert_file_contains "$netplan_file" "stp: true"
+    assert_file_contains "$netplan_file" "forward-delay: 4"
+    # Should NOT have on-link
+    ! grep -q "on-link: true" "$netplan_file"
+}
+
+@test "configure_bridge_interface: dry-run mentions direct-route mode" {
+    export DRY_RUN=true
+    export PRIMARY_NIC="enp4s0"
+    export PRIMARY_NIC_IP="88.198.21.134/32"
+    export DIRECT_ROUTE_MODE=true
+
+    run configure_bridge_interface
+    assert_status 0
+    assert_output_contains "DRY-RUN"
+    assert_output_contains "/32 direct-route"
 }
 
 # =============================================================================
@@ -549,4 +682,37 @@ MOCK
 
     # Should fail because Netplan dir is not writable
     [[ "$status" -ne 0 ]]
+}
+
+# =============================================================================
+# prompt_reboot() tests
+# =============================================================================
+
+@test "prompt_reboot: does nothing when reboot not required" {
+    export REBOOT_REQUIRED=false
+
+    run prompt_reboot
+    assert_status 0
+    # No output expected when reboot is not required
+    [[ -z "$output" ]]
+}
+
+@test "prompt_reboot: in --yes mode without --reboot shows warning" {
+    export REBOOT_REQUIRED=true
+    export YES_MODE=true
+    export REBOOT_ALLOWED=false
+    export DRY_RUN=false
+
+    run prompt_reboot
+    assert_status 0
+    assert_output_contains "sudo reboot"
+}
+
+@test "prompt_reboot: dry-run does nothing even with reboot required" {
+    export REBOOT_REQUIRED=true
+    export YES_MODE=false
+    export DRY_RUN=true
+
+    run prompt_reboot
+    assert_status 0
 }
