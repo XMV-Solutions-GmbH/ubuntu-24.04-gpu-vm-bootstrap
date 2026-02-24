@@ -74,10 +74,21 @@ teardown() {
     [[ "$output" == *"DRY-RUN"* ]]
 }
 
-@test "phase_kvm_setup_stub_succeeds" {
+@test "phase_kvm_setup_dryRun_succeeds" {
+    export DRY_RUN=true
+    # Need a mock dpkg-query that says packages are NOT installed
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/dpkg-query" << 'EOF'
+#!/bin/bash
+exit 1
+EOF
+    chmod +x "$mock_dir/dpkg-query"
+    export PATH="$mock_dir:$PATH"
+
     run phase_kvm_setup
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"not yet implemented"* ]]
+    [[ "$output" == *"DRY-RUN"* ]]
 }
 
 @test "phase_vfio_setup_stub_succeeds" {

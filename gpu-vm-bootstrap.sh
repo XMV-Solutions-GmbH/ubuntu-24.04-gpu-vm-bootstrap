@@ -810,13 +810,192 @@ phase_nvidia_setup() {
 }
 
 # =============================================================================
-# Phase Stubs (to be implemented in subsequent phases)
+# Phase 2: KVM/libvirt Setup
 # =============================================================================
 
-phase_kvm_setup() {
-    log_info "KVM/libvirt setup — not yet implemented"
+# KVM/QEMU required packages
+readonly KVM_PACKAGES=(
+    qemu-kvm
+    qemu-utils
+    libvirt-daemon-system
+    libvirt-clients
+    virtinst
+    virt-manager
+    ovmf
+    cpu-checker
+    bridge-utils
+)
+
+# Install KVM/QEMU virtualisation packages
+install_kvm_packages() {
+    log_step "packages" "Installing KVM/QEMU packages..."
+
+    local all_installed=true
+    for pkg in "${KVM_PACKAGES[@]}"; do
+        if ! is_pkg_installed "${pkg}"; then
+            all_installed=false
+            break
+        fi
+    done
+
+    if [[ "${all_installed}" == "true" ]]; then
+        log_success "All KVM/QEMU packages already installed"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install packages: ${KVM_PACKAGES[*]}"
+        return 0
+    fi
+
+    log_info "Updating package lists..."
+    apt-get update -qq >> "${LOG_FILE}" 2>&1
+
+    log_info "Installing KVM/QEMU packages..."
+    if ! DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${KVM_PACKAGES[@]}" >> "${LOG_FILE}" 2>&1; then
+        log_error "Failed to install KVM/QEMU packages"
+        log_error "Check ${LOG_FILE} for details"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "KVM/QEMU packages installed"
     return 0
 }
+
+# Configure the libvirtd service and user permissions
+configure_libvirtd() {
+    log_step "libvirtd" "Configuring libvirt daemon..."
+
+    # Enable and start libvirtd
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would enable and start libvirtd"
+        log_dry_run "Would add current user to libvirt and kvm groups"
+        return 0
+    fi
+
+    ensure_service_running "libvirtd"
+
+    # Add the invoking user (SUDO_USER) to libvirt and kvm groups
+    local target_user="${SUDO_USER:-}"
+
+    if [[ -n "${target_user}" && "${target_user}" != "root" ]]; then
+        local groups_changed=false
+
+        if ! id -nG "${target_user}" 2>/dev/null | grep -qw "libvirt"; then
+            log_info "Adding user '${target_user}' to group 'libvirt'..."
+            usermod -aG libvirt "${target_user}"
+            groups_changed=true
+        fi
+
+        if ! id -nG "${target_user}" 2>/dev/null | grep -qw "kvm"; then
+            log_info "Adding user '${target_user}' to group 'kvm'..."
+            usermod -aG kvm "${target_user}"
+            groups_changed=true
+        fi
+
+        if [[ "${groups_changed}" == "true" ]]; then
+            log_success "User '${target_user}' added to libvirt/kvm groups"
+            log_info "Group changes take effect on next login"
+        else
+            log_debug "User '${target_user}' already in libvirt/kvm groups"
+        fi
+    else
+        log_debug "Running as root without SUDO_USER — skipping group configuration"
+    fi
+
+    # Configure libvirt default URI
+    local libvirt_profile="/etc/profile.d/libvirt.sh"
+    if [[ ! -f "${libvirt_profile}" ]]; then
+        log_info "Setting default libvirt connection URI..."
+        cat > "${libvirt_profile}" << 'LIBVIRT_ENV'
+# Default libvirt connection URI
+# Added by gpu-vm-bootstrap
+export LIBVIRT_DEFAULT_URI="qemu:///system"
+LIBVIRT_ENV
+        chmod 644 "${libvirt_profile}"
+        log_debug "Created ${libvirt_profile}"
+    fi
+
+    log_success "libvirt daemon configured"
+    return 0
+}
+
+# Verify KVM readiness — check CPU virtualisation support and module loading
+verify_kvm_readiness() {
+    log_step "verify" "Verifying KVM readiness..."
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would verify KVM readiness via kvm-ok and module checks"
+        return 0
+    fi
+
+    # Check hardware virtualisation support via kvm-ok
+    if is_command_available kvm-ok; then
+        if kvm-ok >> "${LOG_FILE}" 2>&1; then
+            log_success "Hardware virtualisation support confirmed (kvm-ok)"
+        else
+            log_warn "kvm-ok reports issues — check BIOS/UEFI virtualisation settings"
+            log_warn "Ensure Intel VT-x or AMD-V is enabled"
+        fi
+    else
+        log_debug "kvm-ok not available — checking modules directly"
+    fi
+
+    # Check that KVM kernel module is loaded
+    if is_module_loaded kvm; then
+        log_success "KVM kernel module loaded"
+
+        # Check for vendor-specific module
+        if is_module_loaded kvm_intel; then
+            log_info "KVM Intel module loaded (VT-x)"
+        elif is_module_loaded kvm_amd; then
+            log_info "KVM AMD module loaded (AMD-V)"
+        else
+            log_debug "No vendor-specific KVM module detected"
+        fi
+    else
+        log_warn "KVM kernel module not loaded"
+        log_warn "Check that virtualisation is enabled in BIOS/UEFI"
+    fi
+
+    # Check /dev/kvm exists and is accessible
+    if [[ -c /dev/kvm ]]; then
+        log_success "/dev/kvm is available"
+    else
+        log_warn "/dev/kvm not found — KVM acceleration will not be available"
+    fi
+
+    # Verify libvirtd is running
+    if is_service_active libvirtd; then
+        log_success "libvirtd service is active"
+    else
+        log_warn "libvirtd service is not running"
+    fi
+
+    # Verify virsh can connect
+    if is_command_available virsh; then
+        if virsh -c qemu:///system version >> "${LOG_FILE}" 2>&1; then
+            log_success "virsh can connect to QEMU/KVM"
+        else
+            log_warn "virsh cannot connect to QEMU/KVM — check libvirtd"
+        fi
+    fi
+
+    return 0
+}
+
+# Phase 2 orchestrator: KVM/libvirt setup
+phase_kvm_setup() {
+    install_kvm_packages || return $?
+    configure_libvirtd || return $?
+    verify_kvm_readiness || return $?
+
+    return 0
+}
+
+# =============================================================================
+# Phase Stubs (to be implemented in subsequent phases)
+# =============================================================================
 
 phase_vfio_setup() {
     log_info "IOMMU/VFIO configuration — not yet implemented"

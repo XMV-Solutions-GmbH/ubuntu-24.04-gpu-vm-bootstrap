@@ -55,9 +55,9 @@
 
 | Status | Task                                             | Notes                                           |
 | ------ | ------------------------------------------------ | ----------------------------------------------- |
-| ⚪     | Install KVM/QEMU packages                        | `qemu-kvm`, `libvirt-daemon`, `virt-install`    |
-| ⚪     | Configure libvirtd                               | Enable service, user permissions                |
-| ⚪     | Verify KVM readiness                             | `kvm-ok`, module checks                         |
+| 🟢     | Install KVM/QEMU packages                        | 9 packages incl. `qemu-kvm`, `libvirt-daemon-system`, `ovmf` |
+| 🟢     | Configure libvirtd                               | Enable service, user groups, default URI        |
+| 🟢     | Verify KVM readiness                             | `kvm-ok`, module checks, `/dev/kvm`, `virsh`    |
 
 #### Phase 4: Bootstrap Script — IOMMU/VFIO Configuration
 
