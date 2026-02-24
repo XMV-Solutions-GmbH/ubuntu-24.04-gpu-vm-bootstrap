@@ -99,10 +99,26 @@ EOF
     [[ "$output" == *"DRY-RUN"* ]]
 }
 
-@test "phase_bridge_setup_stub_succeeds" {
+@test "phase_bridge_setup_dryRun_succeeds" {
+    export DRY_RUN=true
+
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"route show default"* ]]; then
+    echo "default via 10.0.0.1 dev eth0 proto static"
+elif [[ "$*" == *"-4 addr show dev"* ]]; then
+    echo "    inet 10.0.0.5/24 brd 10.0.0.255 scope global eth0"
+fi
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
     run phase_bridge_setup
     [[ "$status" -eq 0 ]]
-    [[ "$output" == *"not yet implemented"* ]]
+    [[ "$output" == *"DRY-RUN"* ]]
 }
 
 @test "phase_vmctl_install_stub_succeeds" {
