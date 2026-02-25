@@ -138,6 +138,21 @@
 | 🟢     | Create Cloud-Init config                          | Static IP for /32, hostname, qemu-guest-agent   |
 | 🟢     | Implement `vmctl create ubuntu`                   | ISO-based, Cloud-Init, GPU passthrough          |
 
+#### Phase 14: Ubuntu Cloud Image & Live Testing (PR #20)
+
+| Status | Task                                             | Notes                                           |
+| ------ | ------------------------------------------------ | ----------------------------------------------- |
+| 🟢     | Switch to Cloud Image approach                    | `--import` with cloud image instead of `--cdrom` ISO |
+| 🟢     | Auto-download Ubuntu cloud image                  | `_download_ubuntu_cloud_image()` with caching   |
+| 🟢     | Default release to 25.10                          | Updated from 24.04 to 25.10                     |
+| 🟢     | macvtap networking auto-detection                 | `_vm_net_args()` — macvtap fallback when no br0 |
+| 🟢     | Host prefix-length detection                      | `_host_prefix_len()` for /32, /28, /24          |
+| 🟢     | Cloud-Init with desktop packages                  | `ubuntu-desktop-minimal`, `xrdp`, `openssh-server` |
+| 🟢     | Auto-install `genisoimage`                        | Added to KVM_PACKAGES + runtime install in vmctl |
+| 🟢     | GPU grep pattern fix                              | Two-step grep (class code before vendor name)   |
+| 🟢     | Live VM testing on Hetzner hardware               | VM created, SSH reachable, Cloud-Init working   |
+| 🟢     | 6 new unit tests                                  | Cloud image URL, download, prefix detection     |
+
 #### Phase 12: Testing
 
 | Status | Task                                             | Notes                                           |
@@ -145,8 +160,8 @@
 | 🟢     | Unit tests for argument parsing                   | 38 tests in `test_argument_parsing.bats`        |
 | 🟢     | Unit tests for helper functions                   | 303 total tests across 12 test files            |
 | 🟢     | Unit tests for vmctl subcommands                  | 45 tests in `test_vmctl_cli.bats`               |
-| 🟢     | Unit tests for GPU/create/networking              | 44 tests in `test_vmctl_gpu_create.bats`        |
-| 🟢     | Total test count                                  | 345 tests (303 unit + 20 E2E + 22 harness)      |
+| 🟢     | Unit tests for GPU/create/networking              | 50 tests in `test_vmctl_gpu_create.bats`        |
+| 🟢     | Total test count                                  | 351 tests (309 unit + 20 E2E + 22 harness)      |
 | 🟢     | Harness tests on real NVIDIA hardware              | 22 tests in `test_live_gpu.bats`, 0 failures    |
 | 🟢     | E2E test framework                                | 20 tests in `test_bootstrap_dryrun.bats`        |
 
@@ -163,6 +178,7 @@
 
 | Priority | Task                                   | Complexity | Notes                              |
 | -------- | -------------------------------------- | ---------- | ---------------------------------- |
+| High     | GPU hot-plug `driver_override` safety  | Medium     | Reset `driver_override` in `_pci_unbind()` before rebinding to prevent kernel hangs |
 | High     | vGPU/MIG support for supported GPUs    | High       | A100/H100 MIG, GRID vGPU          |
 | High     | Multi-GPU support                      | Medium     | Select which GPU to passthrough    |
 | Medium   | vmctl snapshot support                 | Low        | `vmctl snapshot create/restore`    |
