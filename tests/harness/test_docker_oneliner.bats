@@ -27,6 +27,10 @@ RELEASE_URL="${REPO_URL}/releases/latest/download/gpu-vm-bootstrap.sh"
 DOCKER_IMAGE="ubuntu:24.04"
 CONTAINER_PREFIX="bootstrap-harness"
 
+# Set HARNESS_VERBOSE=true to stream Docker output to the terminal in real time.
+# Usage: HARNESS_VERBOSE=true bats tests/harness/test_docker_oneliner.bats
+HARNESS_VERBOSE="${HARNESS_VERBOSE:-false}"
+
 # =============================================================================
 # Helpers
 # =============================================================================
@@ -56,6 +60,7 @@ teardown() {
 
 # Run a command inside a fresh Ubuntu 24.04 container.
 # Uses --network host so that ping-based connectivity checks succeed.
+# When HARNESS_VERBOSE=true, streams output to fd 3 (bats terminal).
 # Arguments:
 #   $1 — test suffix (used in container name)
 #   $2… — command and arguments to run
@@ -63,14 +68,24 @@ _docker_run() {
     local suffix="$1"; shift
     local name="${CONTAINER_PREFIX}-${suffix}-$$"
 
-    docker run --rm \
-        --name "${name}" \
-        --network host \
-        "${DOCKER_IMAGE}" \
-        bash -c "$*"
+    if [[ "${HARNESS_VERBOSE}" == "true" ]]; then
+        echo ">>> [${suffix}] starting container ${name}" >&3
+        docker run --rm \
+            --name "${name}" \
+            --network host \
+            "${DOCKER_IMAGE}" \
+            bash -c "$*" 2>&1 | tee /dev/fd/3
+    else
+        docker run --rm \
+            --name "${name}" \
+            --network host \
+            "${DOCKER_IMAGE}" \
+            bash -c "$*"
+    fi
 }
 
 # Run a command inside a container with GPU access.
+# When HARNESS_VERBOSE=true, streams output to fd 3 (bats terminal).
 # Arguments:
 #   $1 — test suffix
 #   $2… — command and arguments
@@ -78,12 +93,22 @@ _docker_run_gpu() {
     local suffix="$1"; shift
     local name="${CONTAINER_PREFIX}-${suffix}-$$"
 
-    docker run --rm \
-        --name "${name}" \
-        --network host \
-        --gpus all \
-        "${DOCKER_IMAGE}" \
-        bash -c "$*"
+    if [[ "${HARNESS_VERBOSE}" == "true" ]]; then
+        echo ">>> [${suffix}] starting GPU container ${name}" >&3
+        docker run --rm \
+            --name "${name}" \
+            --network host \
+            --gpus all \
+            "${DOCKER_IMAGE}" \
+            bash -c "$*" 2>&1 | tee /dev/fd/3
+    else
+        docker run --rm \
+            --name "${name}" \
+            --network host \
+            --gpus all \
+            "${DOCKER_IMAGE}" \
+            bash -c "$*"
+    fi
 }
 
 # Check whether the NVIDIA Container Toolkit is functional.
