@@ -1,0 +1,5 @@
+1..39
+ok 1 docker_harness_prerequisite_dockerAvailable
+ok 2 docker_harness_prerequisite_ubuntuImagePullable
+ok 3 docker_harness_oneliner_curlDownloadsScript
+ok 4 docker_harness_oneliner_scriptIsValidBash
