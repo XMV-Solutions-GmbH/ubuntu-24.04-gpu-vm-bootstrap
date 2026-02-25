@@ -988,6 +988,7 @@ readonly KVM_PACKAGES=(
     ovmf
     cpu-checker
     bridge-utils
+    genisoimage
 )
 
 # Install KVM/QEMU virtualisation packages

@@ -827,68 +827,37 @@ MOCK
 }
 
 # =============================================================================
-# Ubuntu ISO Download Helpers
+# Ubuntu Cloud Image Download Helpers
 # =============================================================================
 
-@test "_fetch_ubuntu_iso_name_parsesIndexPage" {
-    # Mock curl to return a fake directory listing
-    local mock_dir="$TEST_TMP_DIR/mocks"
-    mkdir -p "$mock_dir"
-    cat > "$mock_dir/curl" << 'MOCK'
-#!/bin/bash
-if [[ "$*" == *"-fsSL"* ]]; then
-    cat << 'HTML'
-<a href="ubuntu-25.10-desktop-amd64.iso">ubuntu-25.10-desktop-amd64.iso</a>
-HTML
-    exit 0
-fi
-exit 0
-MOCK
-    chmod +x "$mock_dir/curl"
-    export PATH="$mock_dir:$PATH"
-
-    run _fetch_ubuntu_iso_name "25.10"
+@test "_ubuntu_cloud_image_name_returnsCorrectFilename" {
+    run _ubuntu_cloud_image_name "25.10"
     assert_status 0
-    assert_output_contains "ubuntu-25.10-desktop-amd64.iso"
+    assert_output_contains "ubuntu-25.10-server-cloudimg-amd64.img"
 }
 
-@test "_fetch_ubuntu_iso_name_noISOFound_returnsError" {
-    local mock_dir="$TEST_TMP_DIR/mocks"
-    mkdir -p "$mock_dir"
-    cat > "$mock_dir/curl" << 'MOCK'
-#!/bin/bash
-echo "<html>empty page</html>"
-exit 0
-MOCK
-    chmod +x "$mock_dir/curl"
-    export PATH="$mock_dir:$PATH"
-
-    run _fetch_ubuntu_iso_name "99.99"
-    assert_status 1
+@test "_ubuntu_cloud_image_name_usesDefaultRelease" {
+    run _ubuntu_cloud_image_name
+    assert_status 0
+    assert_output_contains "ubuntu-${UBUNTU_DEFAULT_RELEASE}-server-cloudimg-amd64.img"
 }
 
-@test "_download_ubuntu_iso_usesCachedISO" {
-    # Place a fake cached ISO
-    touch "$VMCTL_IMAGE_DIR/ubuntu-25.10-desktop-amd64.iso"
+@test "_download_ubuntu_cloud_image_usesCachedImage" {
+    # Place a fake cached cloud image
+    touch "$VMCTL_IMAGE_DIR/ubuntu-25.10-server-cloudimg-amd64.img"
 
-    run _download_ubuntu_iso
+    run _download_ubuntu_cloud_image
     assert_status 0
     assert_output_contains "Using cached"
-    assert_output_contains "ubuntu-25.10-desktop-amd64.iso"
+    assert_output_contains "ubuntu-25.10-server-cloudimg-amd64.img"
 }
 
-@test "_download_ubuntu_iso_noCachedISO_triggersDownload" {
-    # Mock curl for both index page and download
+@test "_download_ubuntu_cloud_image_noCached_triggersDownload" {
+    # Mock curl for download
     local mock_dir="$TEST_TMP_DIR/mocks"
     mkdir -p "$mock_dir"
     cat > "$mock_dir/curl" << 'MOCK'
 #!/bin/bash
-if [[ "$*" == *"-fsSL"* ]]; then
-    cat << 'HTML'
-<a href="ubuntu-25.10-desktop-amd64.iso">ubuntu-25.10-desktop-amd64.iso</a>
-HTML
-    exit 0
-fi
 if [[ "$*" == *"-fSL"* ]] && [[ "$*" == *"--progress-bar"* ]]; then
     # Fake download — extract -o argument to create file
     local outfile=""
@@ -901,7 +870,7 @@ if [[ "$*" == *"-fSL"* ]] && [[ "$*" == *"--progress-bar"* ]]; then
         prev="$arg"
     done
     if [[ -n "$outfile" ]]; then
-        echo "fake-iso-content" > "$outfile"
+        echo "fake-cloud-image-content" > "$outfile"
     fi
     exit 0
 fi
@@ -910,10 +879,10 @@ MOCK
     chmod +x "$mock_dir/curl"
     export PATH="$mock_dir:$PATH"
 
-    run _download_ubuntu_iso
+    run _download_ubuntu_cloud_image
     assert_status 0
-    assert_output_contains "Downloading Ubuntu"
-    assert_output_contains "Ubuntu ISO ready"
+    assert_output_contains "Downloading Ubuntu cloud image"
+    assert_output_contains "Ubuntu cloud image ready"
 }
 
 @test "_host_prefix_len_returns32ForDirectRoute" {
