@@ -1,4 +1,4 @@
-1..184
+1..309
 ok 1 parse_args_noArgs_defaultsAreSet
 ok 2 parse_args_skipNvidia_setsFlag
 ok 3 parse_args_skipKvm_setsFlag
@@ -47,8 +47,8 @@ ok 45 configure_bridge_interface: /32 direct-route disables STP
 ok 46 configure_bridge_interface: standard mode uses STP enabled
 ok 47 configure_bridge_interface: dry-run mentions direct-route mode
 ok 48 apply_bridge_config: dry-run shows what would be done
-ok 49 apply_bridge_config: runs netplan apply
-ok 50 apply_bridge_config: fails when netplan apply fails
+ok 49 apply_bridge_config: runs netplan try then apply
+ok 50 apply_bridge_config: fails when netplan try fails and reports rollback
 ok 51 verify_bridge_connectivity: dry-run shows what would be done
 ok 52 verify_bridge_connectivity: verifies bridge is UP with IP
 ok 53 verify_bridge_connectivity: warns when bridge interface missing
@@ -59,127 +59,252 @@ ok 57 phase_bridge_setup: propagates configure_bridge_interface error
 ok 58 prompt_reboot: does nothing when reboot not required
 ok 59 prompt_reboot: in --yes mode without --reboot shows warning
 ok 60 prompt_reboot: dry-run does nothing even with reboot required
-ok 61 is_pkg_installed_installedPkg_returnsZero
-ok 62 is_pkg_installed_missingPkg_returnsNonZero
-ok 63 is_command_available_existingCmd_returnsZero
-ok 64 is_command_available_missingCmd_returnsNonZero
-ok 65 is_file_present_existingFile_returnsZero
-ok 66 is_file_present_emptyFile_returnsNonZero
-ok 67 is_file_present_missingFile_returnsNonZero
-ok 68 is_line_in_file_linePresent_returnsZero
-ok 69 is_line_in_file_lineAbsent_returnsNonZero
-ok 70 is_line_in_file_fileMissing_returnsNonZero
-ok 71 is_grub_param_set_paramPresent_returnsZero
-ok 72 is_grub_param_set_paramAbsent_returnsNonZero
-ok 73 is_grub_param_set_fileMissing_returnsNonZero
-ok 74 is_service_active_nonexistentService_returnsNonZero
-ok 75 is_service_enabled_nonexistentService_returnsNonZero
-ok 76 is_module_loaded_loadedModule_returnsZero
-ok 77 is_module_loaded_missingModule_returnsNonZero
-ok 78 ensure_pkg_installed_dryRun_doesNotInstall
-ok 79 ensure_pkg_installed_alreadyInstalled_skips
-ok 80 ensure_service_running_dryRun_doesNotStart
-ok 81 install_kvm_packages: skips when all packages installed
-ok 82 install_kvm_packages: dry-run shows what would be installed
-ok 83 install_kvm_packages: KVM_PACKAGES array contains expected packages
-ok 84 configure_libvirtd: dry-run shows what would be done
-ok 85 configure_libvirtd: adds user to groups when SUDO_USER set
-ok 86 configure_libvirtd: skips groups when user already member
-ok 87 configure_libvirtd: skips groups when running as root without SUDO_USER
-ok 88 verify_kvm_readiness: dry-run skips verification
-ok 89 verify_kvm_readiness: reports success with kvm-ok and modules
-ok 90 verify_kvm_readiness: detects AMD KVM module
-ok 91 verify_kvm_readiness: warns when kvm-ok fails
-ok 92 verify_kvm_readiness: warns when KVM module not loaded
-ok 93 verify_kvm_readiness: warns when /dev/kvm missing
-ok 94 verify_kvm_readiness: warns when libvirtd not running
-ok 95 phase_kvm_setup: dry-run completes without side effects
-ok 96 phase_kvm_setup: succeeds when everything already installed
-ok 97 phase_kvm_setup: skipped via run_phase when --skip-kvm set
-ok 98 log_init_validPath_initialisesSuccessfully
-ok 99 log_info_message_outputContainsINFO
-ok 100 log_success_message_outputContainsOK
-ok 101 log_warn_message_outputContainsWARN
-ok 102 log_error_message_outputContainsFAIL
-ok 103 log_debug_verboseOff_noOutput
-ok 104 log_debug_verboseOn_outputContainsDBUG
-ok 105 log_phase_phaseNumber_outputContainsPhase
-ok 106 log_step_stepName_outputContainsStep
-ok 107 log_dry_run_message_outputContainsDRYRUN
-ok 108 _log_to_file_initialised_writesToFile
-ok 109 _log_to_file_initialised_containsTimestamp
-ok 110 _log_to_file_notInitialised_doesNotCrash
-ok 111 detect_nvidia_gpu: detects single NVIDIA GPU
-ok 112 detect_nvidia_gpu: detects multiple NVIDIA GPUs
-ok 113 detect_nvidia_gpu: fails when no NVIDIA GPU present
-ok 114 detect_nvidia_gpu: exports PCI slot address
-ok 115 detect_nvidia_gpu: exports PCI vendor:device ID
-ok 116 detect_nvidia_gpu: installs pciutils when lspci missing (dry-run)
-ok 117 add_nvidia_repository: skips when repo already configured
-ok 118 add_nvidia_repository: dry-run shows what would be done
-ok 119 install_nvidia_drivers: skips when nvidia-smi already works
-ok 120 install_nvidia_drivers: dry-run shows what would be installed
-ok 121 install_cuda_toolkit: skips when nvcc already available
-ok 122 install_cuda_toolkit: dry-run shows what would be installed
-ok 123 install_nvidia_container_toolkit: skips when nvidia-ctk available
-ok 124 install_nvidia_container_toolkit: dry-run shows what would be done
-ok 125 verify_nvidia_setup: reports healthy GPU with nvidia-smi
-ok 126 verify_nvidia_setup: warns when nvidia-smi unavailable
-ok 127 verify_nvidia_setup: warns when nvidia-smi fails
-ok 128 verify_nvidia_setup: dry-run skips verification
-ok 129 phase_nvidia_setup: runs all steps in order with GPU present
-ok 130 phase_nvidia_setup: dry-run completes without side effects
-ok 131 phase_nvidia_setup: fails when no GPU detected
-ok 132 phase_nvidia_setup: sets reboot flag when nvidia-smi unavailable
-ok 133 phase_nvidia_setup: skipped via run_phase when --skip-nvidia set
-ok 134 detect_nvidia_gpu: handles various NVIDIA GPU types
-ok 135 detect_nvidia_gpu: handles Tesla/data centre GPUs
-ok 136 detect_nvidia_gpu: handles H100 GPUs
-ok 137 run_phase_normalExecution_succeeds
-ok 138 run_phase_skipped_outputContainsSkipping
-ok 139 run_phase_skipped_phaseNotExecuted
-ok 140 run_phase_phaseFails_returnsNonZero
-ok 141 run_phase_phaseSucceeds_outputContainsComplete
-ok 142 phase_nvidia_setup_dryRun_succeeds
-ok 143 phase_kvm_setup_dryRun_succeeds
-ok 144 phase_vfio_setup_dryRun_succeeds
-ok 145 phase_bridge_setup_dryRun_succeeds
-ok 146 phase_vmctl_install_stub_succeeds
-ok 147 show_banner_outputContainsProjectName
-ok 148 print_summary_outputContainsComplete
-ok 149 print_summary_dryRun_outputContainsDryRun
-ok 150 check_ubuntu_version_ubuntu2404_succeeds
-ok 151 check_ubuntu_version_ubuntu2404_outputContainsDetected
-ok 152 check_ubuntu_version_wrongVersion_fails
-ok 153 check_ubuntu_version_notUbuntu_fails
-ok 154 check_ubuntu_version_missingFile_fails
-ok 155 check_ubuntu_version_fedora_fails
-ok 156 check_root_nonRoot_fails
-ok 157 check_root_asRoot_succeeds # skip Test must be run as root user
-ok 158 check_network_reachable_succeeds
-ok 159 check_network_unreachable_fails
-ok 160 check_secure_boot_disabled_succeeds
-ok 161 check_secure_boot_enabled_failsWithInstructions
-ok 162 check_secure_boot_dryRun_skipsWhenMokutilMissing
-ok 163 check_secure_boot_enabledEFI_failsWithRemoteInstructions
-ok 164 detect_cpu_vendor: detects Intel CPU
-ok 165 detect_cpu_vendor: exports CPU_VENDOR variable
-ok 166 detect_cpu_vendor: exports IOMMU_PARAM variable
-ok 167 configure_grub_iommu: skips when params already set
-ok 168 configure_grub_iommu: dry-run shows what would be done
-ok 169 configure_grub_iommu: appends params to existing GRUB line
-ok 170 configure_grub_iommu: adds new line when GRUB_CMDLINE missing
-ok 171 configure_grub_iommu: creates backup of grub file
-ok 172 configure_grub_iommu: fails when grub file missing
-ok 173 configure_vfio_modules: dry-run shows what would be done
-ok 174 configure_vfio_modules: dry-run shows PCI ID in exclusive mode
-ok 175 configure_vfio_modules: adds modules to /etc/modules
-ok 176 configure_vfio_modules: flexible mode logs on-demand message
-ok 177 detect_iommu_groups: handles missing IOMMU groups gracefully
-ok 178 detect_iommu_groups: counts available groups
-ok 179 handle_vfio_reboot: silent when no reboot required
-ok 180 handle_vfio_reboot: warns when reboot required
-ok 181 handle_vfio_reboot: sets global REBOOT_REQUIRED flag
-ok 182 phase_vfio_setup: dry-run completes without side effects
-ok 183 phase_vfio_setup: skipped via run_phase when --skip-vfio set
-ok 184 phase_vfio_setup: succeeds with grub already configured
+ok 61 prompt_reboot: non-interactive session shows warning instead of menu
+ok 62 is_pkg_installed_installedPkg_returnsZero
+ok 63 is_pkg_installed_missingPkg_returnsNonZero
+ok 64 is_command_available_existingCmd_returnsZero
+ok 65 is_command_available_missingCmd_returnsNonZero
+ok 66 is_file_present_existingFile_returnsZero
+ok 67 is_file_present_emptyFile_returnsNonZero
+ok 68 is_file_present_missingFile_returnsNonZero
+ok 69 is_line_in_file_linePresent_returnsZero
+ok 70 is_line_in_file_lineAbsent_returnsNonZero
+ok 71 is_line_in_file_fileMissing_returnsNonZero
+ok 72 is_grub_param_set_paramPresent_returnsZero
+ok 73 is_grub_param_set_paramAbsent_returnsNonZero
+ok 74 is_grub_param_set_fileMissing_returnsNonZero
+ok 75 is_service_active_nonexistentService_returnsNonZero
+ok 76 is_service_enabled_nonexistentService_returnsNonZero
+ok 77 is_module_loaded_loadedModule_returnsZero
+ok 78 is_module_loaded_missingModule_returnsNonZero
+ok 79 ensure_pkg_installed_dryRun_doesNotInstall
+ok 80 ensure_pkg_installed_alreadyInstalled_skips
+ok 81 ensure_service_running_dryRun_doesNotStart
+ok 82 install_kvm_packages: skips when all packages installed
+ok 83 install_kvm_packages: dry-run shows what would be installed
+ok 84 install_kvm_packages: KVM_PACKAGES array contains expected packages
+ok 85 configure_libvirtd: dry-run shows what would be done
+ok 86 configure_libvirtd: adds user to groups when SUDO_USER set
+ok 87 configure_libvirtd: skips groups when user already member
+ok 88 configure_libvirtd: skips groups when running as root without SUDO_USER
+ok 89 verify_kvm_readiness: dry-run skips verification
+ok 90 verify_kvm_readiness: reports success with kvm-ok and modules
+ok 91 verify_kvm_readiness: detects AMD KVM module
+ok 92 verify_kvm_readiness: warns when kvm-ok fails
+ok 93 verify_kvm_readiness: warns when KVM module not loaded
+ok 94 verify_kvm_readiness: warns when /dev/kvm missing
+ok 95 verify_kvm_readiness: warns when libvirtd not running
+ok 96 phase_kvm_setup: dry-run completes without side effects
+ok 97 phase_kvm_setup: succeeds when everything already installed
+ok 98 phase_kvm_setup: skipped via run_phase when --skip-kvm set
+ok 99 log_init_validPath_initialisesSuccessfully
+ok 100 log_info_message_outputContainsINFO
+ok 101 log_success_message_outputContainsOK
+ok 102 log_warn_message_outputContainsWARN
+ok 103 log_error_message_outputContainsFAIL
+ok 104 log_debug_verboseOff_noOutput
+ok 105 log_debug_verboseOn_outputContainsDBUG
+ok 106 log_phase_phaseNumber_outputContainsPhase
+ok 107 log_step_stepName_outputContainsStep
+ok 108 log_dry_run_message_outputContainsDRYRUN
+ok 109 _log_to_file_initialised_writesToFile
+ok 110 _log_to_file_initialised_containsTimestamp
+ok 111 _log_to_file_notInitialised_doesNotCrash
+ok 112 detect_nvidia_gpu: detects single NVIDIA GPU
+ok 113 detect_nvidia_gpu: detects multiple NVIDIA GPUs
+ok 114 detect_nvidia_gpu: fails when no NVIDIA GPU present
+ok 115 detect_nvidia_gpu: exports PCI slot address
+ok 116 detect_nvidia_gpu: exports PCI vendor:device ID
+ok 117 detect_nvidia_gpu: installs pciutils when lspci missing (dry-run)
+ok 118 add_nvidia_repository: skips when repo already configured
+ok 119 add_nvidia_repository: dry-run shows what would be done
+ok 120 ensure_kernel_headers: skips when headers already installed
+ok 121 ensure_kernel_headers: dry-run shows what would be installed
+ok 122 ensure_kernel_headers: installs headers for running kernel
+ok 123 install_nvidia_drivers: skips when nvidia-smi already works
+ok 124 install_nvidia_drivers: dry-run shows what would be installed
+ok 125 install_cuda_toolkit: skips when nvcc already available
+ok 126 install_cuda_toolkit: dry-run shows what would be installed
+ok 127 install_nvidia_container_toolkit: skips when nvidia-ctk available
+ok 128 install_nvidia_container_toolkit: dry-run shows what would be done
+ok 129 verify_nvidia_setup: reports healthy GPU with nvidia-smi
+ok 130 verify_nvidia_setup: warns when nvidia-smi unavailable
+ok 131 verify_nvidia_setup: warns when nvidia-smi fails
+ok 132 verify_nvidia_setup: dry-run skips verification
+ok 133 phase_nvidia_setup: runs all steps in order with GPU present
+ok 134 phase_nvidia_setup: dry-run completes without side effects
+ok 135 phase_nvidia_setup: fails when no GPU detected
+ok 136 phase_nvidia_setup: sets reboot flag when nvidia-smi unavailable
+ok 137 phase_nvidia_setup: skipped via run_phase when --skip-nvidia set
+ok 138 detect_nvidia_gpu: handles various NVIDIA GPU types
+ok 139 detect_nvidia_gpu: handles Tesla/data centre GPUs
+ok 140 detect_nvidia_gpu: handles H100 GPUs
+ok 141 run_phase_normalExecution_succeeds
+ok 142 run_phase_skipped_outputContainsSkipping
+ok 143 run_phase_skipped_phaseNotExecuted
+ok 144 run_phase_phaseFails_returnsNonZero
+ok 145 run_phase_phaseSucceeds_outputContainsComplete
+ok 146 phase_nvidia_setup_dryRun_succeeds
+ok 147 phase_kvm_setup_dryRun_succeeds
+ok 148 phase_vfio_setup_dryRun_succeeds
+ok 149 phase_bridge_setup_dryRun_succeeds
+ok 150 phase_vmctl_install_dryRun_succeeds
+ok 151 show_banner_outputContainsProjectName
+ok 152 print_summary_outputContainsComplete
+ok 153 print_summary_dryRun_outputContainsDryRun
+ok 154 check_ubuntu_version_ubuntu2404_succeeds
+ok 155 check_ubuntu_version_ubuntu2404_outputContainsDetected
+ok 156 check_ubuntu_version_wrongVersion_fails
+ok 157 check_ubuntu_version_notUbuntu_fails
+ok 158 check_ubuntu_version_missingFile_fails
+ok 159 check_ubuntu_version_fedora_fails
+ok 160 check_root_nonRoot_fails
+ok 161 check_root_asRoot_succeeds # skip Test must be run as root user
+ok 162 check_network_reachable_succeeds
+ok 163 check_network_unreachable_fails
+ok 164 check_secure_boot_disabled_succeeds
+ok 165 check_secure_boot_enabled_failsWithInstructions
+ok 166 check_secure_boot_dryRun_skipsWhenMokutilMissing
+ok 167 check_secure_boot_enabledEFI_failsWithRemoteInstructions
+ok 168 _is_inside_multiplexer: detects tmux
+ok 169 _is_inside_multiplexer: detects GNU screen via TERM
+ok 170 _is_inside_multiplexer: detects GNU screen via STY
+ok 171 _is_inside_multiplexer: returns false when no multiplexer
+ok 172 check_terminal_multiplexer: skips when bridge is disabled
+ok 173 check_terminal_multiplexer: succeeds inside tmux
+ok 174 check_terminal_multiplexer: aborts when no multiplexer in interactive mode
+ok 175 check_terminal_multiplexer: warns but continues in --yes mode
+ok 176 check_terminal_multiplexer: warns but continues in --dry-run mode
+ok 177 detect_cpu_vendor: detects Intel CPU
+ok 178 detect_cpu_vendor: exports CPU_VENDOR variable
+ok 179 detect_cpu_vendor: exports IOMMU_PARAM variable
+ok 180 configure_grub_iommu: skips when params already set
+ok 181 configure_grub_iommu: dry-run shows what would be done
+ok 182 configure_grub_iommu: appends params to existing GRUB line
+ok 183 configure_grub_iommu: adds new line when GRUB_CMDLINE missing
+ok 184 configure_grub_iommu: creates backup of grub file
+ok 185 configure_grub_iommu: fails when grub file missing
+ok 186 configure_vfio_modules: dry-run shows what would be done
+ok 187 configure_vfio_modules: dry-run shows PCI ID in exclusive mode
+ok 188 configure_vfio_modules: adds modules to /etc/modules
+ok 189 configure_vfio_modules: flexible mode logs on-demand message
+ok 190 detect_iommu_groups: handles missing IOMMU groups gracefully
+ok 191 detect_iommu_groups: counts available groups
+ok 192 handle_vfio_reboot: silent when no reboot required
+ok 193 handle_vfio_reboot: warns when reboot required
+ok 194 handle_vfio_reboot: sets global REBOOT_REQUIRED flag
+ok 195 phase_vfio_setup: dry-run completes without side effects
+ok 196 phase_vfio_setup: skipped via run_phase when --skip-vfio set
+ok 197 phase_vfio_setup: succeeds with grub already configured
+ok 198 show_version_printsVersionString
+ok 199 show_usage_printsHelpText
+ok 200 main_noArgs_showsUsage
+ok 201 main_help_showsUsage
+ok 202 main_dashH_showsUsage
+ok 203 main_dashDashHelp_showsUsage
+ok 204 main_version_showsVersion
+ok 205 main_unknownCommand_returnsError
+ok 206 _require_command_existingCommand_succeeds
+ok 207 _require_command_missingCommand_returnsError
+ok 208 cmd_start_noName_returnsInvalidArgs
+ok 209 cmd_stop_noName_returnsInvalidArgs
+ok 210 cmd_info_noName_returnsInvalidArgs
+ok 211 cmd_delete_noName_returnsInvalidArgs
+ok 212 cmd_ssh_noName_returnsInvalidArgs
+ok 213 cmd_gpu_status_showsGPUInfo
+ok 214 cmd_gpu_status_noGPU_showsWarning
+ok 215 cmd_gpu_attach_noName_returnsInvalidArgs
+ok 216 cmd_gpu_detach_noName_returnsInvalidArgs
+ok 217 cmd_gpu_invalidSubcommand_returnsError
+ok 218 cmd_gpu_noSubcommand_returnsError
+ok 219 cmd_ip_check_directRouteMode_showsWarning
+ok 220 cmd_ip_list_noVMs_showsMessage
+ok 221 cmd_ip_invalidSubcommand_returnsError
+ok 222 cmd_ip_noSubcommand_returnsError
+ok 223 cmd_create_talos_directRouteMode_noMac_returnsError
+ok 224 cmd_create_ubuntu_directRouteMode_noMac_returnsError
+ok 225 cmd_create_invalidType_returnsError
+ok 226 cmd_create_noType_returnsError
+ok 227 main_list_callsCmdList
+ok 228 main_gpu_status_dispatches
+ok 229 main_ip_list_dispatches
+ok 230 main_create_invalidType_returnsError
+ok 231 _vm_exists_knownVM_succeeds
+ok 232 _vm_exists_unknownVM_fails
+ok 233 _vm_state_runningVM_returnsRunning
+ok 234 _vm_state_stoppedVM_returnsShutOff
+ok 235 _vm_ip_guestAgentReturnsIP_outputsIP
+ok 236 _vm_ip_noAgent_fallsBackToARP
+ok 237 _vm_ip_noIPAvailable_returnsDash
+ok 238 cmd_list_noVMs_showsNoVMsMessage
+ok 239 cmd_start_vmNotFound_returnsError
+ok 240 cmd_stop_vmNotFound_returnsError
+ok 241 cmd_info_vmNotFound_returnsError
+ok 242 cmd_delete_vmNotFound_returnsError
+ok 243 cmd_ssh_vmNotFound_returnsError
+ok 244 _gpu_pci_slots_withGPU_returnsSlots
+ok 245 _gpu_pci_slots_noGPU_returnsEmpty
+ok 246 _gpu_vendor_device_returnsVendorDeviceId
+ok 247 _gpu_current_driver_sysfsPath_returnsDriver
+ok 248 _gpu_current_driver_noDriver_returnsNone
+ok 249 _has_gpu_withNVIDIA_returnsTrue
+ok 250 _has_gpu_noNVIDIA_returnsFalse
+ok 251 _is_direct_route_mode_onlink_returnsTrue
+ok 252 _is_direct_route_mode_standardRoute_returnsFalse
+ok 253 _host_gateway_returnsGateway
+ok 254 _bridge_name_withBridge_returnsBr0
+ok 255 _bridge_name_noBridge_returnsVirbr0Fallback
+ok 256 _auto_cpus_returnsHalfOfNproc
+ok 257 _auto_cpus_singleCPU_returnsMinimum2
+ok 258 _auto_memory_returnsHalfOfTotal
+ok 259 _auto_memory_lowRAM_returnsMinimum2048
+ok 260 _auto_name_noExistingVMs_returnsFirstName
+ok 261 _auto_name_existingVM_incrementsNumber
+ok 262 _random_mac_generatesValidMAC
+ok 263 _parse_create_opts_defaultValues_appliesSmartDefaults
+ok 264 _parse_create_opts_explicitValues_overridesDefaults
+ok 265 _parse_create_opts_directRouteMode_noMacIP_returnsError
+ok 266 _parse_create_opts_directRouteMode_withMacIP_succeeds
+ok 267 _parse_create_opts_unknownOption_returnsError
+ok 268 _parse_create_opts_ipAndMac_setsValues
+ok 269 _nvidia_extension_name_turingPlus_returnsOpen
+ok 270 _nvidia_extension_name_maxwell_returnsNonfree
+ok 271 _nvidia_extension_name_pascal_returnsNonfree
+ok 272 _nvidia_extension_name_turing_returnsOpen
+ok 273 _nvidia_extension_name_noGPU_defaultsToOpen
+ok 274 _fetch_talos_version_fromCache_returnsCachedVersion
+ok 275 cmd_gpu_invalidSubcommand_returnsError
+ok 276 cmd_gpu_noSubcommand_returnsError
+ok 277 cmd_gpu_attach_vmNotFound_returnsError
+ok 278 cmd_gpu_detach_vmNotFound_returnsError
+ok 279 cmd_ip_invalidSubcommand_returnsError
+ok 280 cmd_ip_noSubcommand_returnsError
+ok 281 cmd_create_invalidType_returnsError
+ok 282 cmd_create_noType_returnsError
+ok 283 cmd_create_talos_vmAlreadyExists_returnsError
+ok 284 cmd_ip_list_withVMs_showsTable
+ok 285 show_usage_containsCreateOptions
+ok 286 show_usage_containsGPUCommands
+ok 287 show_usage_containsExamples
+ok 288 _ubuntu_cloud_image_name_returnsCorrectFilename
+ok 289 _ubuntu_cloud_image_name_usesDefaultRelease
+ok 290 _download_ubuntu_cloud_image_usesCachedImage
+ok 291 _download_ubuntu_cloud_image_noCached_triggersDownload
+ok 292 _host_prefix_len_returns32ForDirectRoute
+ok 293 _host_prefix_len_returns28ForSubnet
+ok 294 _locate_vmctl_source_scriptInSameDir_returnsLocalPath
+ok 295 _vmctl_version_matches_noInstalledBinary_returnsFalse
+ok 296 _vmctl_version_matches_sameVersion_returnsTrue
+ok 297 _vmctl_version_matches_differentVersion_returnsFalse
+ok 298 install_vmctl_freshInstall_copiesBinary
+ok 299 install_vmctl_alreadyInstalled_skips
+ok 300 install_vmctl_dryRun_doesNotCopy
+ok 301 install_vmctl_updatesOlderVersion
+ok 302 create_vmctl_config_dir_dirNotExist_createsIt
+ok 303 create_vmctl_config_dir_dirAlreadyExists_skips
+ok 304 create_vmctl_config_dir_dryRun_doesNotCreate
+ok 305 verify_vmctl_installed_succeeds
+ok 306 verify_vmctl_notOnPath_returnsError
+ok 307 verify_vmctl_dryRun_skipsCheck
+ok 308 phase_vmctl_install_fullRun_succeeds
+ok 309 phase_vmctl_install_dryRun_succeeds

@@ -825,3 +825,102 @@ MOCK
     assert_output_contains "vmctl create talos"
     assert_output_contains "vmctl create ubuntu"
 }
+
+# =============================================================================
+# Ubuntu Cloud Image Download Helpers
+# =============================================================================
+
+@test "_ubuntu_cloud_image_name_returnsCorrectFilename" {
+    run _ubuntu_cloud_image_name "25.10"
+    assert_status 0
+    assert_output_contains "ubuntu-25.10-server-cloudimg-amd64.img"
+}
+
+@test "_ubuntu_cloud_image_name_usesDefaultRelease" {
+    run _ubuntu_cloud_image_name
+    assert_status 0
+    assert_output_contains "ubuntu-${UBUNTU_DEFAULT_RELEASE}-server-cloudimg-amd64.img"
+}
+
+@test "_download_ubuntu_cloud_image_usesCachedImage" {
+    # Place a fake cached cloud image
+    touch "$VMCTL_IMAGE_DIR/ubuntu-25.10-server-cloudimg-amd64.img"
+
+    run _download_ubuntu_cloud_image
+    assert_status 0
+    assert_output_contains "Using cached"
+    assert_output_contains "ubuntu-25.10-server-cloudimg-amd64.img"
+}
+
+@test "_download_ubuntu_cloud_image_noCached_triggersDownload" {
+    # Mock curl for download
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/curl" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"-fSL"* ]] && [[ "$*" == *"--progress-bar"* ]]; then
+    # Fake download — extract -o argument to create file
+    local outfile=""
+    local prev=""
+    for arg in $@; do
+        if [[ "$prev" == "-o" ]]; then
+            outfile="$arg"
+            break
+        fi
+        prev="$arg"
+    done
+    if [[ -n "$outfile" ]]; then
+        echo "fake-cloud-image-content" > "$outfile"
+    fi
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/curl"
+    export PATH="$mock_dir:$PATH"
+
+    run _download_ubuntu_cloud_image
+    assert_status 0
+    assert_output_contains "Downloading Ubuntu cloud image"
+    assert_output_contains "Ubuntu cloud image ready"
+}
+
+@test "_host_prefix_len_returns32ForDirectRoute" {
+    # Mock ip command to return /32
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"addr show"* ]]; then
+    echo "    inet 88.198.21.134/32 scope global enp4s0"
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
+    run _host_prefix_len
+    assert_status 0
+    [[ "$output" == "32" ]]
+}
+
+@test "_host_prefix_len_returns28ForSubnet" {
+    # Mock ip command to return /28
+    local mock_dir="$TEST_TMP_DIR/mocks"
+    mkdir -p "$mock_dir"
+    cat > "$mock_dir/ip" << 'MOCK'
+#!/bin/bash
+if [[ "$*" == *"addr show"* ]]; then
+    echo "    inet 88.198.27.122/28 scope global enp4s0"
+    exit 0
+fi
+exit 0
+MOCK
+    chmod +x "$mock_dir/ip"
+    export PATH="$mock_dir:$PATH"
+
+    run _host_prefix_len
+    assert_status 0
+    [[ "$output" == "28" ]]
+}

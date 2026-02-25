@@ -20,6 +20,8 @@ readonly VMCTL_IMAGE_DIR="${VMCTL_IMAGE_DIR:-${VMCTL_CONFIG_DIR}/images}"
 readonly VMCTL_MANAGED_TAG="managed-by-vmctl"
 readonly TALOS_IMAGE_FACTORY_URL="https://factory.talos.dev"
 readonly TALOS_GITHUB_API="https://api.github.com/repos/siderolabs/talos/releases/latest"
+readonly UBUNTU_CLOUD_IMAGE_URL="https://cloud-images.ubuntu.com/releases"
+readonly UBUNTU_DEFAULT_RELEASE="25.10"
 
 # Exit codes
 readonly EXIT_SUCCESS=0
@@ -212,6 +214,36 @@ _bridge_name() {
     br="$(ip -o link show type bridge 2>/dev/null \
         | awk -F': ' '{print $2}' | head -n1)"
     echo "${br:-br0}"
+}
+
+# Check whether a proper (non-NAT) bridge is available.
+# Returns true if a bridge other than virbr* exists.
+_has_physical_bridge() {
+    ip -o link show type bridge 2>/dev/null \
+        | awk -F': ' '{print $2}' \
+        | grep -qv '^virbr'
+}
+
+# Get the primary physical NIC (the one carrying the default route)
+_primary_nic() {
+    ip route show default 2>/dev/null \
+        | sed -n 's/.*dev \([^ ]*\).*/\1/p' \
+        | head -n1
+}
+
+# Build the virt-install --network argument.
+# In direct-route mode without a physical bridge, use macvtap for direct
+# L2 access to the physical network.  Otherwise use the bridge.
+_vm_net_args() {
+    local mac="${1:?MAC address required}"
+
+    if _is_direct_route_mode && ! _has_physical_bridge; then
+        local nic=""
+        nic="$(_primary_nic)"
+        echo "type=direct,source=${nic},model=virtio,source_mode=bridge,mac=${mac}"
+    else
+        echo "bridge=$(_bridge_name),model=virtio,mac=${mac}"
+    fi
 }
 
 # Get the bridge IP address with prefix
@@ -670,7 +702,8 @@ cmd_gpu_attach() {
     # Find the VGA GPU slot (function 0)
     local gpu_slot=""
     gpu_slot="$(lspci -nn 2>/dev/null \
-        | grep -i 'nvidia.*\[03' \
+        | grep -i 'nvidia' \
+        | grep '\[03' \
         | awk '{print $1}' | head -n1)"
 
     if [[ -z "${gpu_slot}" ]]; then
@@ -1094,6 +1127,55 @@ _download_talos_image() {
     echo "${image_file}"
 }
 
+# Build the Ubuntu cloud image filename for a given release
+_ubuntu_cloud_image_name() {
+    local release="${1:-${UBUNTU_DEFAULT_RELEASE}}"
+    echo "ubuntu-${release}-server-cloudimg-amd64.img"
+}
+
+# Download an Ubuntu cloud image (cached)
+# shellcheck disable=SC2120
+_download_ubuntu_cloud_image() {
+    local release="${1:-${UBUNTU_DEFAULT_RELEASE}}"
+
+    # Check cache first — any matching cloud image present?
+    local img_name=""
+    img_name="$(_ubuntu_cloud_image_name "${release}")"
+    local dest="${VMCTL_IMAGE_DIR}/${img_name}"
+
+    if [[ -f "${dest}" ]]; then
+        log_info "Using cached Ubuntu cloud image: ${dest}"
+        echo "${dest}"
+        return 0
+    fi
+
+    _require_command curl || return $?
+
+    local url="${UBUNTU_CLOUD_IMAGE_URL}/${release}/release/${img_name}"
+
+    mkdir -p "${VMCTL_IMAGE_DIR}"
+    log_info "Downloading Ubuntu cloud image..."
+    log_info "URL: ${url}"
+    log_info "This is a ~780 MB download."
+
+    if ! curl -fSL --progress-bar -o "${dest}" "${url}"; then
+        log_error "Failed to download Ubuntu cloud image from ${url}"
+        rm -f "${dest}"
+        return "${EXIT_GENERAL_ERROR}"
+    fi
+
+    log_success "Ubuntu cloud image ready: ${dest}"
+    echo "${dest}"
+}
+
+# Detect the host interface prefix length (e.g. 32, 28, 24)
+_host_prefix_len() {
+    local prefix=""
+    prefix="$(ip -4 addr show scope global 2>/dev/null \
+        | awk '/inet / {split($2, a, "/"); print a[2]; exit}')" || true
+    echo "${prefix:-32}"
+}
+
 # =============================================================================
 # Subcommand: create
 # =============================================================================
@@ -1216,9 +1298,9 @@ cmd_create_talos() {
         qemu-img resize "${vm_disk}" "${VM_DISK}G" 2>/dev/null || true
     fi
 
-    # Determine network config
+    # Determine network config — macvtap in direct-route mode, bridge otherwise
     local net_args
-    net_args="bridge=$(_bridge_name),model=virtio,mac=${VM_MAC}"
+    net_args="$(_vm_net_args "${VM_MAC}")"
 
     # Build virt-install command
     local -a cmd=(
@@ -1239,7 +1321,8 @@ cmd_create_talos() {
     if [[ "${VM_GPU}" == "attach" ]]; then
         local gpu_slot=""
         gpu_slot="$(lspci -nn 2>/dev/null \
-            | grep -i 'nvidia.*\[03' \
+            | grep -i 'nvidia' \
+            | grep '\[03' \
             | awk '{print $1}' | head -n1)"
 
         if [[ -n "${gpu_slot}" ]]; then
@@ -1280,16 +1363,17 @@ cmd_create_talos() {
     fi
 }
 
-# vmctl create ubuntu — create an Ubuntu Desktop VM
+# vmctl create ubuntu — create an Ubuntu VM from a cloud image with Cloud-Init
 cmd_create_ubuntu() {
     _parse_create_opts "$@" || return $?
 
     _require_command virsh libvirt-clients || return $?
     _require_command virt-install virtinst || return $?
+    _require_command qemu-img qemu-utils || return $?
 
     # Auto-name
     if [[ -z "${VM_NAME}" ]]; then
-        VM_NAME="$(_auto_name "ubuntu-desktop")"
+        VM_NAME="$(_auto_name "ubuntu")"
     fi
 
     if _vm_exists "${VM_NAME}"; then
@@ -1297,51 +1381,45 @@ cmd_create_ubuntu() {
         return "${EXIT_GENERAL_ERROR}"
     fi
 
-    log_info "Creating Ubuntu Desktop VM: ${VM_NAME}"
+    log_info "Creating Ubuntu VM: ${VM_NAME}"
     log_info "  vCPUs:   ${VM_CPUS}"
     log_info "  Memory:  ${VM_MEMORY} MiB"
     log_info "  Disk:    ${VM_DISK} GiB"
     log_info "  GPU:     ${VM_GPU}"
     log_info "  MAC:     ${VM_MAC}"
 
-    # Check for Ubuntu ISO
-    local iso_dir="${VMCTL_IMAGE_DIR}"
-    local iso_file=""
-    iso_file="$(find "${iso_dir}" -maxdepth 1 -name 'ubuntu-*.iso' -print -quit 2>/dev/null)" || true
+    # Download / locate Ubuntu cloud image
+    local cloud_image=""
+    # shellcheck disable=SC2119
+    cloud_image="$(_download_ubuntu_cloud_image)" || return $?
+    log_info "  Image:   ${cloud_image}"
 
-    if [[ -z "${iso_file}" ]]; then
-        log_error "No Ubuntu ISO found in ${iso_dir}"
-        log_info "Download one with:"
-        log_info "  sudo mkdir -p ${iso_dir}"
-        log_info "  sudo wget -O ${iso_dir}/ubuntu-25.10-desktop-amd64.iso \\"
-        log_info "    https://releases.ubuntu.com/25.10/ubuntu-25.10-desktop-amd64.iso"
-        return "${EXIT_GENERAL_ERROR}"
-    fi
-    log_info "  ISO:     ${iso_file}"
-
-    # Create disk
+    # Create VM disk as a copy of the cloud image and resize
     local vm_disk="/var/lib/libvirt/images/${VM_NAME}.qcow2"
     log_info "Creating VM disk: ${vm_disk} (${VM_DISK} GiB)"
-    qemu-img create -f qcow2 "${vm_disk}" "${VM_DISK}G" 2>/dev/null
+    cp "${cloud_image}" "${vm_disk}"
+    qemu-img resize "${vm_disk}" "${VM_DISK}G" 2>/dev/null
 
-    # Cloud-Init data (if IP is specified, configure static networking)
-    local cloud_init_args=()
-    if [[ -n "${VM_IP}" ]] && _is_direct_route_mode; then
-        local ci_dir="${VMCTL_CONFIG_DIR}/cloud-init-${VM_NAME}"
-        mkdir -p "${ci_dir}"
+    # Cloud-Init data — always required for cloud images
+    local ci_dir="${VMCTL_CONFIG_DIR}/cloud-init-${VM_NAME}"
+    mkdir -p "${ci_dir}"
 
-        # Meta-data
-        cat > "${ci_dir}/meta-data" << EOF
+    # Meta-data
+    cat > "${ci_dir}/meta-data" << EOF
 instance-id: ${VM_NAME}
 local-hostname: ${VM_NAME}
 EOF
 
-        # Network config for /32 mode
-        cat > "${ci_dir}/network-config" << EOF
+    # Network config
+    local net_v2=""
+    if [[ -n "${VM_IP}" ]]; then
+        local prefix_len
+        prefix_len="$(_host_prefix_len)"
+        net_v2="$(cat << EOF
 version: 2
 ethernets:
   enp1s0:
-    addresses: [${VM_IP}/32]
+    addresses: [${VM_IP}/${prefix_len}]
     routes:
       - on-link: true
         to: 0.0.0.0/0
@@ -1349,9 +1427,20 @@ ethernets:
     nameservers:
       addresses: [185.12.64.1, 185.12.64.2]
 EOF
+)"
+    else
+        net_v2="$(cat << EOF
+version: 2
+ethernets:
+  enp1s0:
+    dhcp4: true
+EOF
+)"
+    fi
+    echo "${net_v2}" > "${ci_dir}/network-config"
 
-        # User-data
-        cat > "${ci_dir}/user-data" << EOF
+    # User-data — install desktop environment via Cloud-Init
+    cat > "${ci_dir}/user-data" << 'CIEOF'
 #cloud-config
 hostname: ${VM_NAME}
 manage_etc_hosts: true
@@ -1360,34 +1449,60 @@ users:
     sudo: ALL=(ALL) NOPASSWD:ALL
     shell: /bin/bash
     lock_passwd: false
-    passwd: \$6\$rounds=4096\$vmctl\$placeholder
+    passwd: $6$vmctl$jZuLPDACnhq5B1iajFAAkKoV21UXCCXxLINbwXshUEJD/hv2JYb918bGmWl.tNCbXpBp/csXrvLxGnDvi4jDM0
 ssh_pwauth: true
 package_update: true
+package_upgrade: true
 packages:
   - qemu-guest-agent
+  - ubuntu-desktop-minimal
+  - xrdp
+  - openssh-server
 runcmd:
   - systemctl enable --now qemu-guest-agent
-EOF
+  - systemctl enable --now xrdp
+  - systemctl set-default graphical.target
+  - |
+    # Enable auto-login for user
+    mkdir -p /etc/gdm3
+    cat > /etc/gdm3/custom.conf << 'GDM'
+    [daemon]
+    AutomaticLoginEnable=true
+    AutomaticLogin=user
+    GDM
+power_state:
+  mode: reboot
+  message: "Cloud-Init complete — rebooting into desktop"
+  condition: true
+CIEOF
+    # Expand VM_NAME in user-data (heredoc was quoted to protect $6)
+    sed -i "s/\${VM_NAME}/${VM_NAME}/g" "${ci_dir}/user-data"
 
-        # Create Cloud-Init ISO
-        local ci_iso="${VMCTL_CONFIG_DIR}/${VM_NAME}-cidata.iso"
-        if command -v genisoimage &>/dev/null; then
+    # Create Cloud-Init ISO
+    local ci_iso="${VMCTL_CONFIG_DIR}/${VM_NAME}-cidata.iso"
+    if command -v genisoimage &>/dev/null; then
+        genisoimage -output "${ci_iso}" -volid cidata -joliet -rock \
+            "${ci_dir}/user-data" "${ci_dir}/meta-data" "${ci_dir}/network-config" \
+            2>/dev/null
+    elif command -v cloud-localds &>/dev/null; then
+        cloud-localds -N "${ci_dir}/network-config" "${ci_iso}" "${ci_dir}/user-data" \
+            2>/dev/null
+    else
+        log_info "Installing genisoimage..."
+        if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq genisoimage >/dev/null 2>&1; then
             genisoimage -output "${ci_iso}" -volid cidata -joliet -rock \
                 "${ci_dir}/user-data" "${ci_dir}/meta-data" "${ci_dir}/network-config" \
                 2>/dev/null
-            cloud_init_args+=(--disk "path=${ci_iso},device=cdrom")
-        elif command -v cloud-localds &>/dev/null; then
-            cloud-localds -N "${ci_dir}/network-config" "${ci_iso}" "${ci_dir}/user-data" \
-                2>/dev/null
-            cloud_init_args+=(--disk "path=${ci_iso},device=cdrom")
         else
-            log_warn "Neither genisoimage nor cloud-localds found — skipping Cloud-Init"
+            log_error "Failed to install genisoimage"
+            rm -f "${vm_disk}"
+            return "${EXIT_GENERAL_ERROR}"
         fi
     fi
 
-    # Network config
+    # Network config — macvtap in direct-route mode, bridge otherwise
     local net_args
-    net_args="bridge=$(_bridge_name),model=virtio,mac=${VM_MAC}"
+    net_args="$(_vm_net_args "${VM_MAC}")"
 
     # Build virt-install command
     local -a cmd=(
@@ -1395,12 +1510,14 @@ EOF
         --name "${VM_NAME}"
         --vcpus "${VM_CPUS}"
         --memory "${VM_MEMORY}"
-        --disk "path=${vm_disk},format=qcow2,bus=virtio,size=${VM_DISK}"
-        --cdrom "${iso_file}"
-        "${cloud_init_args[@]}"
+        --disk "path=${vm_disk},format=qcow2,bus=virtio"
+        --disk "path=${ci_iso},device=cdrom"
+        --import
         --network "${net_args}"
         --os-variant "ubuntu24.04"
         --boot "uefi"
+        --graphics "vnc,listen=0.0.0.0"
+        --video virtio
         --noautoconsole
         --metadata "description=${VMCTL_MANAGED_TAG}"
     )
@@ -1409,7 +1526,8 @@ EOF
     if [[ "${VM_GPU}" == "attach" ]]; then
         local gpu_slot=""
         gpu_slot="$(lspci -nn 2>/dev/null \
-            | grep -i 'nvidia.*\[03' \
+            | grep -i 'nvidia' \
+            | grep '\[03' \
             | awk '{print $1}' | head -n1)"
 
         if [[ -n "${gpu_slot}" ]]; then
@@ -1436,11 +1554,17 @@ EOF
 
     log_info "Running virt-install..."
     if "${cmd[@]}" 2>&1; then
-        log_success "VM '${VM_NAME}' created"
-        log_info "Connect via: virt-viewer ${VM_NAME} (or use VNC)"
+        log_success "VM '${VM_NAME}' created and booting"
+        log_info "Cloud-Init will install the desktop environment (~10-15 min)"
+        log_info "Connect via: virt-viewer ${VM_NAME}"
+        log_info "Or via VNC:  virsh vncdisplay ${VM_NAME}"
+        if [[ -n "${VM_IP}" ]]; then
+            log_info "SSH (after Cloud-Init): ssh user@${VM_IP}"
+            log_info "RDP (after Cloud-Init): xfreerdp /v:${VM_IP} /u:user"
+        fi
     else
         log_error "Failed to create VM '${VM_NAME}'"
-        rm -f "${vm_disk}"
+        rm -f "${vm_disk}" "${ci_iso}"
         return "${EXIT_GENERAL_ERROR}"
     fi
 }
