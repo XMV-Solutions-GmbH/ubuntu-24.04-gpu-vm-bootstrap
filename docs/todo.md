@@ -190,3 +190,29 @@
 | Low      | TUI interface for vmctl               | Medium     | Interactive VM management          |
 | Low      | Monitoring/metrics export              | Medium     | GPU utilisation, VM health         |
 | Low      | Ansible playbook alternative           | Medium     | For fleet deployment               |
+
+#### Phase 15: Fix Bridge Netplan Conflict (ISSUE-001)
+
+| Status | Task                                             | Notes                                           |
+| ------ | ------------------------------------------------ | ----------------------------------------------- |
+| 🟢     | Move existing Netplan configs instead of copying  | `mv` statt `cp` in `configure_bridge_interface` |
+| 🟢     | Rollback on `netplan try` failure                 | Restore originals, remove faulty bridge file    |
+| 🟢     | Unit tests for move and rollback behaviour        | `test_bridge_setup.bats`                        |
+
+#### Phase 16: Unattended Security Updates
+
+| Status | Task                                             | Notes                                           |
+| ------ | ------------------------------------------------ | ----------------------------------------------- |
+| 🟢     | Install and configure `unattended-upgrades`       | Automatic security patches                      |
+| 🟢     | Blacklist kernel packages                         | `linux-image-*`, `linux-headers-*`, `linux-modules-*`, `linux-modules-extra-*` |
+| 🟢     | Wire into `main()` as Phase 6                     | `run_phase 6`                                   |
+| 🟢     | Unit tests for configuration                      | `test_unattended_upgrades.bats`                 |
+
+#### Phase 17: Conditional Nightly Reboot
+
+| Status | Task                                             | Notes                                           |
+| ------ | ------------------------------------------------ | ----------------------------------------------- |
+| 🟢     | Create cron job in `/etc/cron.d/`                 | `TZ=Europe/Berlin`, 02:00, checks `/var/run/reboot-required` |
+| 🟢     | Idempotency — skip if already present             | File-existence check                            |
+| 🟢     | Wire into `main()` as Phase 7                     | `run_phase 7`                                   |
+| 🟢     | Unit tests for cron configuration                 | `test_conditional_reboot.bats`                  |

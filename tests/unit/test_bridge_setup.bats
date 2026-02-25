@@ -297,6 +297,7 @@ MOCK
     assert_output_contains "DRY-RUN"
     assert_output_contains "Netplan bridge config"
     assert_output_contains "eth0"
+    assert_output_contains "move existing Netplan configs"
 
     # Should NOT create the file
     [[ ! -f "$NETPLAN_DIR/60-bridge-br0.yaml" ]]
@@ -338,7 +339,10 @@ MOCK
     run configure_bridge_interface
     assert_status 0
 
-    # Check that backup directory was created
+    # Original file must be GONE from the netplan dir (moved, not copied)
+    [[ ! -f "$NETPLAN_DIR/01-existing.yaml" ]]
+
+    # Check that backup directory was created and contains the file
     local backup_found=false
     for d in "$NETPLAN_DIR"/backup-*; do
         if [[ -d "$d" ]]; then
@@ -480,7 +484,7 @@ MOCK
     assert_file_contains "$TEST_TMP_DIR/netplan_calls.log" "apply"
 }
 
-@test "apply_bridge_config: fails when netplan try fails and reports rollback" {
+@test "apply_bridge_config: fails when netplan try fails and restores originals" {
     local mock_dir="$TEST_TMP_DIR/mocks"
     mkdir -p "$mock_dir"
 
@@ -495,9 +499,23 @@ MOCK
     chmod +x "$mock_dir/netplan"
     export PATH="$mock_dir:$PATH"
 
+    # Simulate a backup directory with an original config
+    local backup_dir="$NETPLAN_DIR/backup-20260225120000"
+    mkdir -p "$backup_dir"
+    echo "network: {version: 2}" > "$backup_dir/01-netcfg.yaml"
+
+    # Create the faulty bridge config
+    echo "bridges: {br0: {}}" > "$NETPLAN_DIR/60-bridge-br0.yaml"
+
     run apply_bridge_config
     assert_status 1
-    assert_output_contains "previous configuration has been restored"
+    assert_output_contains "original network config restored"
+
+    # Bridge file should be removed
+    [[ ! -f "$NETPLAN_DIR/60-bridge-br0.yaml" ]]
+
+    # Original config should be restored
+    assert_file_exists "$NETPLAN_DIR/01-netcfg.yaml"
 }
 
 # =============================================================================

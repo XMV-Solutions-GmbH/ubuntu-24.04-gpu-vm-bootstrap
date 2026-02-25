@@ -1626,22 +1626,26 @@ configure_bridge_interface() {
         if [[ "${DIRECT_ROUTE_MODE:-false}" == "true" ]]; then
             log_dry_run "Would use /32 direct-route mode (on-link gateway)"
         fi
+        log_dry_run "Would move existing Netplan configs to backup directory"
         return 0
     fi
 
-    # Back up existing Netplan configs
+    # Back up and REMOVE existing Netplan configs so only the bridge config
+    # remains active.  This fixes the conflict described in ISSUE-001 where
+    # both the original config and the new bridge config declare the same
+    # NIC and a default route.
     local backup_dir=""
     backup_dir="${netplan_dir}/backup-$(date +%Y%m%d%H%M%S)"
     mkdir -p "${backup_dir}"
     local backed_up=false
     for f in "${netplan_dir}"/*.yaml; do
         if [[ -f "${f}" ]]; then
-            cp "${f}" "${backup_dir}/"
+            mv "${f}" "${backup_dir}/"
             backed_up=true
         fi
     done
     if [[ "${backed_up}" == "true" ]]; then
-        log_info "Existing Netplan configs backed up to: ${backup_dir}"
+        log_info "Existing Netplan configs moved to: ${backup_dir}"
     fi
 
     # Generate the appropriate Netplan config based on detected routing mode
@@ -1679,7 +1683,26 @@ apply_bridge_config() {
     log_info "Using 'netplan try' — automatic rollback after 120 s if connectivity fails"
 
     if ! netplan try --timeout 120 >> "${LOG_FILE}" 2>&1; then
-        log_error "netplan try failed — previous configuration has been restored"
+        log_error "netplan try failed — restoring previous configuration"
+
+        # Restore backed-up configs and remove the faulty bridge file
+        local netplan_dir="${NETPLAN_DIR:-/etc/netplan}"
+        local netplan_file="${netplan_dir}/60-bridge-${BRIDGE_NAME}.yaml"
+        local latest_backup=""
+        latest_backup="$(find "${netplan_dir}" -maxdepth 1 -type d -name 'backup-*' | sort -r | head -n1)"
+
+        if [[ -n "${latest_backup}" && -d "${latest_backup}" ]]; then
+            cp "${latest_backup}"/*.yaml "${netplan_dir}/" 2>/dev/null || true
+            log_info "Original Netplan configs restored from: ${latest_backup}"
+        fi
+
+        rm -f "${netplan_file}"
+        log_info "Removed faulty bridge config: ${netplan_file}"
+
+        # Re-apply the restored original configuration
+        netplan apply >> "${LOG_FILE}" 2>&1 || true
+
+        log_error "Bridge setup failed — original network config restored"
         log_error "Check ${LOG_FILE} for details"
         return "${EXIT_GENERAL_ERROR}"
     fi
@@ -1904,6 +1927,109 @@ phase_vmctl_install() {
 }
 
 # =============================================================================
+# Phase 6: Unattended Security Updates
+# =============================================================================
+
+# Configure unattended-upgrades with a kernel package blacklist to prevent
+# automatic kernel updates from breaking NVIDIA DKMS modules.  Security
+# patches for all other packages are applied automatically.
+configure_unattended_upgrades() {
+    log_step "security" "Configuring unattended security updates..."
+
+    local pkg="unattended-upgrades"
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would install ${pkg}"
+        log_dry_run "Would enable automatic security updates"
+        log_dry_run "Would blacklist kernel packages (linux-image-*, linux-headers-*, linux-modules-*)"
+        return 0
+    fi
+
+    ensure_pkg_installed "${pkg}"
+    ensure_pkg_installed "apt-listchanges"
+
+    # Enable unattended-upgrades non-interactively
+    log_info "Enabling unattended-upgrades..."
+    DEBIAN_FRONTEND=noninteractive dpkg-reconfigure -plow unattended-upgrades >> "${LOG_FILE}" 2>&1 || true
+
+    # --- Auto-upgrades trigger ---------------------------------------------------
+    local auto_upgrades_file="/etc/apt/apt.conf.d/20auto-upgrades"
+    cat > "${auto_upgrades_file}" << 'EOF'
+// Managed by gpu-vm-bootstrap — do not edit
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+    log_info "Created ${auto_upgrades_file}"
+
+    # --- Blacklist kernel packages -----------------------------------------------
+    # NVIDIA DKMS modules must be rebuilt whenever the kernel changes.  An
+    # unattended kernel upgrade can leave the system without a working GPU
+    # driver until the administrator manually runs dkms.  Blacklisting
+    # kernel meta-packages ensures that kernel upgrades remain a deliberate,
+    # supervised action.
+    local blacklist_file="/etc/apt/apt.conf.d/51-gpu-vm-kernel-blacklist"
+    cat > "${blacklist_file}" << 'EOF'
+// Managed by gpu-vm-bootstrap — do not edit
+// Blacklist kernel packages to protect NVIDIA DKMS modules.
+// Kernel upgrades should be performed manually so that DKMS can
+// rebuild the NVIDIA driver against the new kernel.
+Unattended-Upgrade::Package-Blacklist {
+    "linux-image-*";
+    "linux-headers-*";
+    "linux-modules-*";
+    "linux-modules-extra-*";
+};
+EOF
+    log_info "Created kernel blacklist: ${blacklist_file}"
+
+    # Ensure the service is enabled
+    ensure_service_running "unattended-upgrades"
+
+    log_success "Unattended security updates configured (kernel packages blacklisted)"
+    return 0
+}
+
+# =============================================================================
+# Phase 7: Conditional Nightly Reboot
+# =============================================================================
+
+# Install a cron job that reboots the host at 02:00 Europe/Berlin, but ONLY
+# when /var/run/reboot-required exists (set by unattended-upgrades or other
+# package managers when a restart is needed).
+configure_conditional_reboot() {
+    log_step "reboot" "Configuring conditional nightly reboot..."
+
+    local cron_file="/etc/cron.d/gpu-vm-conditional-reboot"
+
+    if [[ -f "${cron_file}" ]]; then
+        log_debug "Conditional reboot cron already configured: ${cron_file}"
+        return 0
+    fi
+
+    if [[ "${DRY_RUN}" == "true" ]]; then
+        log_dry_run "Would create cron job: ${cron_file}"
+        log_dry_run "Would reboot at 02:00 Europe/Berlin only if /var/run/reboot-required exists"
+        return 0
+    fi
+
+    cat > "${cron_file}" << 'EOF'
+# Managed by gpu-vm-bootstrap — do not edit
+# Reboot at 02:00 Europe/Berlin only when a reboot is pending.
+# /var/run/reboot-required is created by unattended-upgrades (or dpkg)
+# when a newly installed package requires a restart.
+SHELL=/bin/bash
+TZ=Europe/Berlin
+0 2 * * * root [ -f /var/run/reboot-required ] && /sbin/reboot
+EOF
+
+    chmod 644 "${cron_file}"
+    log_success "Conditional nightly reboot configured: ${cron_file}"
+    log_info "Host will reboot at 02:00 Europe/Berlin only when /var/run/reboot-required exists"
+    return 0
+}
+
+# =============================================================================
 # Summary
 # =============================================================================
 
@@ -2082,6 +2208,12 @@ main() {
 
     # Phase 5: vmctl installation
     run_phase 5 "vmctl Installation" phase_vmctl_install
+
+    # Phase 6: Unattended security updates
+    run_phase 6 "Unattended Security Updates" configure_unattended_upgrades
+
+    # Phase 7: Conditional nightly reboot
+    run_phase 7 "Conditional Nightly Reboot" configure_conditional_reboot
 
     # Summary
     print_summary

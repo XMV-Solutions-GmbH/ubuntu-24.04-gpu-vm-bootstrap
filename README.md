@@ -40,7 +40,7 @@ GPU passthrough, bridge networking, and the `vmctl` CLI — all with a single
 
 ```bash
 # One-liner install (latest release)
-curl -fsSL https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/releases/latest/download/gpu-vm-bootstrap.sh | bash
+curl -fsSL https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/releases/latest/download/gpu-vm-bootstrap.sh | sudo bash
 ```
 
 ```bash
