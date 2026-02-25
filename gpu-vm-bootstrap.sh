@@ -2050,16 +2050,17 @@ main() {
     # without tmux.  The _relaunch_in_tmux function never returns — it
     # replaces the process with a tmux session.
     #
-    # When there is no controlling terminal (e.g. curl | bash without a
-    # TTY), tmux cannot start.  Fall through and let
-    # check_terminal_multiplexer() handle the situation gracefully.
+    # tmux requires a controlling terminal on stdin (-t 0).  When piped
+    # (curl | bash  or  sudo curl | bash) stdin is the pipe, so tmux
+    # cannot start.  Fall through gracefully in that case.
     if [[ "${SKIP_BRIDGE}" != "true" ]] && [[ "${DRY_RUN}" != "true" ]] \
        && ! _is_inside_multiplexer; then
-        if [[ -t 1 ]] || [[ -t 2 ]]; then
+        if [[ -t 0 ]]; then
             _relaunch_in_tmux "$@"
         else
-            log_warn "No terminal available — cannot auto-launch tmux"
+            log_warn "No terminal on stdin — cannot auto-launch tmux"
             log_warn "Bridge setup will be skipped to avoid losing connectivity"
+            log_warn "To include bridge setup, run: sudo ./gpu-vm-bootstrap.sh"
             SKIP_BRIDGE=true
         fi
     fi
