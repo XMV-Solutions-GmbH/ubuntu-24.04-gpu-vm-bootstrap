@@ -48,7 +48,7 @@ teardown() {
     local containers
     containers=$(docker ps -aq --filter "name=${CONTAINER_PREFIX}" 2>/dev/null || true)
     if [[ -n "${containers}" ]]; then
-        docker rm -f ${containers} &>/dev/null || true
+        echo "${containers}" | xargs docker rm -f &>/dev/null || true
     fi
 
     test_teardown
@@ -190,40 +190,53 @@ _gpu_available_in_docker() {
 }
 
 # =============================================================================
-# Pipe-to-bash tests (the actual one-liner pattern)
+# Pipe-to-bash tests — the EXACT one-liner from the README
+#
+# These tests run the real curl | bash against the live GitHub Release.
+# No mounts, no local files, no shortcuts.  If these fail the release
+# is broken.
 # =============================================================================
 
-@test "docker_harness_pipeToBash_dryRunWorks" {
-    # Pipe-to-bash requires the BASH_SOURCE fix (v0.1.1+).
-    # Use the local (patched) script mounted into the container.
-    local script_path
-    script_path="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../.." && pwd)/gpu-vm-bootstrap.sh"
-
-    run docker run --rm \
-        --network host \
-        --name "${CONTAINER_PREFIX}-pipe-dryrun-$$" \
-        -v "${script_path}:/mnt/gpu-vm-bootstrap.sh:ro" \
-        "${DOCKER_IMAGE}" \
-        bash -c "apt-get update -qq && apt-get install -y -qq pciutils iputils-ping >/dev/null 2>&1 && \
-                 cat /mnt/gpu-vm-bootstrap.sh | bash -s -- --dry-run --yes 2>&1 || true"
+@test "docker_harness_pipeToBash_curlPipeBashDryRun" {
+    # The exact one-liner a user would run, with --dry-run --yes appended.
+    run _docker_run "pipe-dryrun" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} | bash -s -- --dry-run --yes 2>&1 || true"
     assert_status 0
     assert_output_contains "Ubuntu 24.04 detected"
     assert_output_contains "Dry run: true"
 }
 
-@test "docker_harness_pipeToBash_helpExitsCleanly" {
-    # Use the local (patched) script for pipe-to-bash compatibility.
-    local script_path
-    script_path="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../.." && pwd)/gpu-vm-bootstrap.sh"
-
-    run docker run --rm \
-        --network host \
-        --name "${CONTAINER_PREFIX}-pipe-help-$$" \
-        -v "${script_path}:/mnt/gpu-vm-bootstrap.sh:ro" \
-        "${DOCKER_IMAGE}" \
-        bash -c "cat /mnt/gpu-vm-bootstrap.sh | bash -s -- --help 2>&1"
+@test "docker_harness_pipeToBash_curlPipeBashHelp" {
+    run _docker_run "pipe-help" \
+        "apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} | bash -s -- --help 2>&1"
     assert_status 0
     assert_output_contains "Usage"
+    assert_output_contains "--dry-run"
+}
+
+@test "docker_harness_pipeToBash_curlPipeSudoBashDryRun" {
+    # Variant: sudo on bash (the correct way for real installs).
+    # In Docker we are already root, so sudo is a no-op — but it proves
+    # the pipe pattern does not break.
+    run _docker_run "pipe-sudo" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping sudo >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} | sudo bash -s -- --dry-run --yes 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Ubuntu 24.04 detected"
+    assert_output_contains "Dry run: true"
+}
+
+@test "docker_harness_pipeToBash_sudoCurlPipeBashDryRun" {
+    # Common mistake: sudo on curl instead of bash.
+    # Must not crash — should degrade gracefully.
+    run _docker_run "pipe-sudocurl" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping sudo >/dev/null 2>&1 && \
+         sudo curl -fsSL ${RELEASE_URL} | bash -s -- --dry-run --yes 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Ubuntu 24.04 detected"
+    assert_output_contains "Dry run: true"
 }
 
 # =============================================================================
