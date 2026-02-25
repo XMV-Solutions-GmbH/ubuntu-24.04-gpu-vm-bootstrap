@@ -1,0 +1,286 @@
+#!/usr/bin/env bats
+# shellcheck disable=SC1090,SC2030,SC2031
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Harness tests for the one-liner install via Docker
+# Spins up an Ubuntu 24.04 Docker container (optionally with GPU),
+# downloads gpu-vm-bootstrap.sh from the latest GitHub release,
+# and validates the install pipeline end-to-end.
+#
+# Prerequisites:
+#   - Docker installed and running
+#   - NVIDIA Container Toolkit installed (for GPU tests)
+#   - Internet access (downloads from GitHub Releases)
+#
+# Usage:
+#   bats tests/harness/test_docker_oneliner.bats
+#   # or via Makefile:
+#   make test-harness
+
+load '../test_helper'
+
+# =============================================================================
+# Constants
+# =============================================================================
+
+REPO_URL="https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap"
+RELEASE_URL="${REPO_URL}/releases/latest/download/gpu-vm-bootstrap.sh"
+DOCKER_IMAGE="ubuntu:24.04"
+CONTAINER_PREFIX="bootstrap-harness"
+
+# =============================================================================
+# Helpers
+# =============================================================================
+
+setup() {
+    test_setup
+
+    if ! command -v docker &>/dev/null; then
+        skip "Docker not installed — skipping Docker harness tests"
+    fi
+
+    if ! docker info &>/dev/null 2>&1; then
+        skip "Docker daemon not running — skipping Docker harness tests"
+    fi
+}
+
+teardown() {
+    # Clean up any containers left behind by this test run
+    local containers
+    containers=$(docker ps -aq --filter "name=${CONTAINER_PREFIX}" 2>/dev/null || true)
+    if [[ -n "${containers}" ]]; then
+        docker rm -f ${containers} &>/dev/null || true
+    fi
+
+    test_teardown
+}
+
+# Run a command inside a fresh Ubuntu 24.04 container.
+# Uses --network host so that ping-based connectivity checks succeed.
+# Arguments:
+#   $1 — test suffix (used in container name)
+#   $2… — command and arguments to run
+_docker_run() {
+    local suffix="$1"; shift
+    local name="${CONTAINER_PREFIX}-${suffix}-$$"
+
+    docker run --rm \
+        --name "${name}" \
+        --network host \
+        "${DOCKER_IMAGE}" \
+        bash -c "$*"
+}
+
+# Run a command inside a container with GPU access.
+# Arguments:
+#   $1 — test suffix
+#   $2… — command and arguments
+_docker_run_gpu() {
+    local suffix="$1"; shift
+    local name="${CONTAINER_PREFIX}-${suffix}-$$"
+
+    docker run --rm \
+        --name "${name}" \
+        --network host \
+        --gpus all \
+        "${DOCKER_IMAGE}" \
+        bash -c "$*"
+}
+
+# Check whether the NVIDIA Container Toolkit is functional.
+_gpu_available_in_docker() {
+    docker run --rm --gpus all "${DOCKER_IMAGE}" \
+        bash -c "command -v nvidia-smi &>/dev/null && nvidia-smi --query-gpu=name --format=csv,noheader" \
+        &>/dev/null 2>&1
+}
+
+# =============================================================================
+# Prerequisite checks
+# =============================================================================
+
+@test "docker_harness_prerequisite_dockerAvailable" {
+    run docker version --format '{{.Server.Version}}'
+    assert_status 0
+    [[ -n "${output}" ]]
+}
+
+@test "docker_harness_prerequisite_ubuntuImagePullable" {
+    run docker pull "${DOCKER_IMAGE}"
+    assert_status 0
+}
+
+# =============================================================================
+# One-liner download tests
+# =============================================================================
+
+@test "docker_harness_oneliner_curlDownloadsScript" {
+    run _docker_run "curl-dl" \
+        "apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         test -s /tmp/gpu-vm-bootstrap.sh && \
+         head -1 /tmp/gpu-vm-bootstrap.sh"
+    assert_status 0
+    assert_output_contains "#!/usr/bin/env bash"
+}
+
+@test "docker_harness_oneliner_scriptIsValidBash" {
+    run _docker_run "bash-syntax" \
+        "apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         bash -n /tmp/gpu-vm-bootstrap.sh && \
+         echo 'SYNTAX_OK'"
+    assert_status 0
+    assert_output_contains "SYNTAX_OK"
+}
+
+# =============================================================================
+# --dry-run mode tests (no GPU required, no system changes)
+# =============================================================================
+
+@test "docker_harness_dryrun_detectsUbuntu2404" {
+    run _docker_run "dryrun-detect" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --dry-run --yes 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Ubuntu 24.04 detected"
+}
+
+@test "docker_harness_dryrun_showsDryRunActions" {
+    run _docker_run "dryrun-actions" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --dry-run --yes 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Dry run: true"
+}
+
+@test "docker_harness_dryrun_showsHelpText" {
+    run _docker_run "dryrun-help" \
+        "apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --help 2>&1"
+    assert_status 0
+    assert_output_contains "Usage"
+    assert_output_contains "--dry-run"
+    assert_output_contains "--skip-nvidia"
+}
+
+@test "docker_harness_dryrun_acceptsAllSkipFlags" {
+    run _docker_run "dryrun-skipall" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --dry-run --yes \
+             --skip-nvidia --skip-kvm --skip-vfio --skip-bridge 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Skipping"
+}
+
+@test "docker_harness_dryrun_wouldInstallPackages" {
+    run _docker_run "dryrun-pkgs" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --dry-run --yes --skip-vfio --skip-bridge 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Would install"
+}
+
+# =============================================================================
+# Pipe-to-bash tests (the actual one-liner pattern)
+# =============================================================================
+
+@test "docker_harness_pipeToBash_dryRunWorks" {
+    # Pipe-to-bash requires the BASH_SOURCE fix (v0.1.1+).
+    # Use the local (patched) script mounted into the container.
+    local script_path
+    script_path="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../.." && pwd)/gpu-vm-bootstrap.sh"
+
+    run docker run --rm \
+        --network host \
+        --name "${CONTAINER_PREFIX}-pipe-dryrun-$$" \
+        -v "${script_path}:/mnt/gpu-vm-bootstrap.sh:ro" \
+        "${DOCKER_IMAGE}" \
+        bash -c "apt-get update -qq && apt-get install -y -qq pciutils iputils-ping >/dev/null 2>&1 && \
+                 cat /mnt/gpu-vm-bootstrap.sh | bash -s -- --dry-run --yes 2>&1 || true"
+    assert_status 0
+    assert_output_contains "Ubuntu 24.04 detected"
+    assert_output_contains "Dry run: true"
+}
+
+@test "docker_harness_pipeToBash_helpExitsCleanly" {
+    # Use the local (patched) script for pipe-to-bash compatibility.
+    local script_path
+    script_path="$(cd "$(dirname "${BATS_TEST_FILENAME}")/../.." && pwd)/gpu-vm-bootstrap.sh"
+
+    run docker run --rm \
+        --network host \
+        --name "${CONTAINER_PREFIX}-pipe-help-$$" \
+        -v "${script_path}:/mnt/gpu-vm-bootstrap.sh:ro" \
+        "${DOCKER_IMAGE}" \
+        bash -c "cat /mnt/gpu-vm-bootstrap.sh | bash -s -- --help 2>&1"
+    assert_status 0
+    assert_output_contains "Usage"
+}
+
+# =============================================================================
+# GPU-in-Docker tests (requires NVIDIA Container Toolkit)
+# =============================================================================
+
+@test "docker_harness_gpu_nvidiaSmiAvailableInContainer" {
+    if ! _gpu_available_in_docker; then
+        skip "GPU not available in Docker — NVIDIA Container Toolkit missing or no GPU"
+    fi
+
+    run _docker_run_gpu "gpu-smi" "nvidia-smi --query-gpu=name --format=csv,noheader"
+    assert_status 0
+    assert_output_contains "NVIDIA"
+}
+
+@test "docker_harness_gpu_dryrunDetectsGPU" {
+    if ! _gpu_available_in_docker; then
+        skip "GPU not available in Docker"
+    fi
+
+    run _docker_run_gpu "gpu-dryrun" \
+        "apt-get update -qq && apt-get install -y -qq curl pciutils iputils-ping >/dev/null 2>&1 && \
+         curl -fsSL ${RELEASE_URL} -o /tmp/gpu-vm-bootstrap.sh && \
+         chmod +x /tmp/gpu-vm-bootstrap.sh && \
+         /tmp/gpu-vm-bootstrap.sh --dry-run --yes --skip-kvm --skip-bridge 2>&1 || true"
+    assert_status 0
+    assert_output_contains "NVIDIA"
+}
+
+@test "docker_harness_gpu_scriptSeesGPUviaPciutils" {
+    if ! _gpu_available_in_docker; then
+        skip "GPU not available in Docker"
+    fi
+
+    run _docker_run_gpu "gpu-lspci" \
+        "apt-get update -qq && apt-get install -y -qq pciutils >/dev/null 2>&1 && \
+         lspci -nn | grep -i nvidia"
+    assert_status 0
+    assert_output_contains "NVIDIA"
+}
+
+# =============================================================================
+# vmctl download test
+# =============================================================================
+
+@test "docker_harness_vmctl_downloadableFromRelease" {
+    local vmctl_url="${REPO_URL}/releases/latest/download/vmctl"
+
+    run _docker_run "vmctl-dl" \
+        "apt-get update -qq && apt-get install -y -qq curl >/dev/null 2>&1 && \
+         curl -fsSL ${vmctl_url} -o /tmp/vmctl && \
+         test -s /tmp/vmctl && \
+         head -1 /tmp/vmctl && \
+         bash -n /tmp/vmctl && \
+         echo 'VMCTL_SYNTAX_OK'"
+    assert_status 0
+    assert_output_contains "#!/usr/bin/env bash"
+    assert_output_contains "VMCTL_SYNTAX_OK"
+}

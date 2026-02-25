@@ -2083,7 +2083,9 @@ main() {
     return "${EXIT_SUCCESS}"
 }
 
-# Only run main if script is executed directly (not sourced)
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+# Only run main if script is executed directly (not sourced).
+# When piped via curl | bash, BASH_SOURCE[0] is unset; treat that as direct
+# execution so the one-liner works out of the box.
+if [[ "${BASH_SOURCE[0]:-$0}" == "${0}" ]]; then
     main "$@"
 fi
