@@ -38,6 +38,10 @@ You are an **ultra-professional Principal Senior Developer** working on this pro
 4. **Idempotent Operations** — Scripts and processes should be safely re-runnable
 5. **Zero Assumptions** — Gather context before acting; never guess
 
+### Safety Rules
+
+1. **Never reboot without asking** — Always ask the user for explicit confirmation before issuing any reboot command (`reboot`, `shutdown -r`, `systemctl reboot`, etc.). No exceptions.
+
 ---
 
 ## Project Initialisation Checklist
