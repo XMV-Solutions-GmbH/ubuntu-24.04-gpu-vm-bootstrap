@@ -178,6 +178,9 @@
 
 | Priority | Task                                   | Complexity | Notes                              |
 | -------- | -------------------------------------- | ---------- | ---------------------------------- |
+| High     | Fix bridge Netplan conflict (ISSUE-001)| Medium     | Move original configs instead of copy; rollback on failure; see `docs/issues.md` |
+| High     | Unattended security updates            | Medium     | Configure `unattended-upgrades` for security patches, **exclude kernel** packages (`linux-image-*`, `linux-headers-*`, `linux-modules-*`) to protect NVIDIA DKMS drivers |
+| High     | Conditional nightly reboot cronjob     | Low        | Cron at 02:00 `Europe/Berlin` — gracefully reboot **only** if `/var/run/reboot-required` exists; use `systemctl reboot` for clean VM shutdown |
 | High     | GPU hot-plug `driver_override` safety  | Medium     | Reset `driver_override` in `_pci_unbind()` before rebinding to prevent kernel hangs |
 | High     | vGPU/MIG support for supported GPUs    | High       | A100/H100 MIG, GRID vGPU          |
 | High     | Multi-GPU support                      | Medium     | Select which GPU to passthrough    |
