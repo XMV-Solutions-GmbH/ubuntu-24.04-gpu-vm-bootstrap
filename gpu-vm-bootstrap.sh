@@ -18,7 +18,7 @@ set -euo pipefail
 # =============================================================================
 
 readonly SCRIPT_NAME="gpu-vm-bootstrap"
-readonly SCRIPT_VERSION="0.1.0-dev"
+readonly SCRIPT_VERSION="0.1.2-dev"
 readonly SCRIPT_DOWNLOAD_URL="https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/gpu-vm-bootstrap.sh"
 readonly VMCTL_DOWNLOAD_URL="https://raw.githubusercontent.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/main/vmctl"
 VMCTL_INSTALL_PATH="${VMCTL_INSTALL_PATH:-/usr/local/bin/vmctl}"
@@ -2049,9 +2049,19 @@ main() {
     # multiplexer is detected.  Skipped in dry-run so previews work
     # without tmux.  The _relaunch_in_tmux function never returns — it
     # replaces the process with a tmux session.
+    #
+    # When there is no controlling terminal (e.g. curl | bash without a
+    # TTY), tmux cannot start.  Fall through and let
+    # check_terminal_multiplexer() handle the situation gracefully.
     if [[ "${SKIP_BRIDGE}" != "true" ]] && [[ "${DRY_RUN}" != "true" ]] \
        && ! _is_inside_multiplexer; then
-        _relaunch_in_tmux "$@"
+        if [[ -t 1 ]] || [[ -t 2 ]]; then
+            _relaunch_in_tmux "$@"
+        else
+            log_warn "No terminal available — cannot auto-launch tmux"
+            log_warn "Bridge setup will be skipped to avoid losing connectivity"
+            SKIP_BRIDGE=true
+        fi
     fi
 
     # Phase 0: Pre-flight checks
