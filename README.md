@@ -1,10 +1,11 @@
 <!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
 # Ubuntu 24.04 GPU VM Bootstrap
 
+> **⚠️ Not actively maintained as of 2026-05-17.** XMV Solutions GmbH is no longer developing this project. Open issues and pull requests will not be addressed. If you find this useful, feel free to fork the repo. For questions or to take over maintenance, contact [oss@xmv.de](mailto:oss@xmv.de).
+
 [![CI](https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/actions/workflows/test.yml/badge.svg)](https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/actions/workflows/test.yml)
 [![Licence](https://img.shields.io/badge/licence-MIT%2FApache--2.0-blue.svg)](LICENSE)
 [![GitHub release](https://img.shields.io/github/v/release/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap)](https://github.com/XMV-Solutions-GmbH/ubuntu-24.04-gpu-vm-bootstrap/releases)
-[![Contributions Welcome](https://img.shields.io/badge/contributions-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
 **One-command GPU workstation setup for Ubuntu 24.04.**
 
@@ -160,16 +161,6 @@ make lint
 - [Test Concept](docs/testconcept.md) — Testing strategy and test case overview
 - [Todo](docs/todo.md) — Development roadmap and task tracking
 - [How-to OSS](docs/howto-oss.md) — Open source repository setup guide
-
----
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Security
-
-See [SECURITY.md](SECURITY.md) for our security policy.
 
 ---
 
